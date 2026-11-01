@@ -1,6 +1,6 @@
 package com.meridian.content.adapter;
 import com.meridian.content.application.ContentAccess;
-import com.meridian.MemberPairLock;
+import com.meridian.shared.adapter.MemberPairLock;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;

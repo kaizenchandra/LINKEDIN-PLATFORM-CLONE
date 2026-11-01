@@ -1,4 +1,8 @@
 package com.meridian;
+import com.meridian.media.adapter.ProfilePhotos;
+import com.meridian.media.application.ProfilePhotoStore.Photo;
+import com.meridian.exports.adapter.AccountDataSnapshot;
+import com.meridian.media.application.PhotoObjects;
 
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
@@ -79,11 +83,20 @@ class S3MediaIntegrationTest {
   var local=new ProfilePhotos(db,context.getBeanProvider(PhotoObjects.class),transactions,new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),true);
   objects.delete(id);assertArrayEquals(original,local.owner(subject));assertArrayEquals(original,objects.get(id));
   local.remove(subject);db.update("update profile_media_object set created_at=now()-interval '20 minutes' where id=?",id);local.cleanup();
-  assertArrayEquals(original,local.read(new ProfilePhotos.Photo(original,id)));
+  assertArrayEquals(original,local.read(new Photo(original,id)));
   assertThrows(PhotoObjects.Missing.class,()->objects.get(id));
  }
  @Test void existingDatabasePhotoRemainsReadableUntilReplaced()throws Exception{
   String subject="s3-legacy";member(subject);db.update("update profile set photo=? where subject=?",png(),subject);
   mvc.perform(get("/api/v1/me/photo").with(oidcLogin().idToken(t->t.subject(subject)))).andExpect(status().isOk());upload(subject);assertNotNull(objectId(subject));
+ }
+ @Test void objectAdapterBoundsReadsAndPreservesEncryptionAndMissingSemantics(){
+  UUID id=UUID.randomUUID();byte[] bytes=new byte[]{1,2,3};objects.put(id,bytes);
+  var head=s3.headObject(r->r.bucket("meridian-test-media").key("profiles/"+id+".png"));
+  assertEquals(software.amazon.awssdk.services.s3.model.ServerSideEncryption.AES256,head.serverSideEncryption());
+  assertArrayEquals(bytes,objects.get(id));
+  s3.putObject(r->r.bucket("meridian-test-media").key("profiles/"+id+".png"),software.amazon.awssdk.core.sync.RequestBody.fromBytes(new byte[com.meridian.media.domain.PhotoLimits.MAX_BYTES+1]));
+  assertThrows(IllegalStateException.class,()->objects.get(id));objects.delete(id);objects.delete(id);
+  assertThrows(PhotoObjects.Missing.class,()->objects.get(id));
  }
 }

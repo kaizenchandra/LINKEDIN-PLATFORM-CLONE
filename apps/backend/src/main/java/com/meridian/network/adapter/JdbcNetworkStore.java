@@ -1,7 +1,7 @@
 package com.meridian.network.adapter;
 import com.meridian.network.application.NetworkStore;
 import com.meridian.network.domain.Network.*;
-import com.meridian.MemberPairLock;
+import com.meridian.shared.adapter.MemberPairLock;
 import java.util.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.dao.DuplicateKeyException;

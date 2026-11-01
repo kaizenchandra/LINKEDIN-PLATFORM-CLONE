@@ -47,9 +47,12 @@ Arrows to ports represent source dependencies; at runtime the application calls 
 | `com.meridian.realtime.adapter` | WebSocket transport, authenticated handshake, bounded delivery and immutable after-commit refresh events; session checks call identity use cases |
 | `com.meridian.applications.domain/application/adapter` | Application response values, submission/list/history/resume/status use cases, answer/resume policies, persistence/signal ports and HTTP/JDBC adapters |
 | `com.meridian.events.domain/application/adapter` | Outbox/delivery values, publication and consumption use cases, persistence/publishing/processing/offset ports, JDBC/Kafka adapters and worker configuration |
+| `com.meridian.messaging.domain/application/adapter` | Conversation/message values, read/write use cases, persistence/signal ports and HTTP/JDBC adapters |
+| `com.meridian.media.domain/application/adapter` | Shared photo size limit, object storage/maintenance ports, S3 implementation and cleanup scheduler/configuration; photo orchestration remains legacy |
+| `com.meridian.exports.domain/application/adapter` | Export state/retry policy, lifecycle/queue/generation use cases, persistence/snapshot/metrics ports and HTTP/JDBC/scheduled adapters |
 | `com.meridian.shared.application` | Transaction port and transport-independent failure reasons |
 | `com.meridian.shared.adapter` | Spring transaction implementation, HTTP failure translation and bean composition |
-| `com.meridian` | Existing entry point, security and not-yet-migrated workflows; retention scheduler delegates through the new input port |
+| `com.meridian` | Spring Boot entry point and not-yet-migrated workflows; security and retention now live in their adapter packages |
 
 The frontend continues using the authoritative OpenAPI contract and generated TypeScript types. It does not depend on Java package topology. No frontend rewrite, API version bump, service split or database migration is needed for this change.
 
@@ -419,3 +422,114 @@ No AWS deployment occurred. Consumer processing orchestration and remaining lega
 A processed or successfully quarantined record commits its next offset. Projection, quarantine or commit failures seek each affected partition to the earliest still-uncommitted record in the fetched batch, then propagate for scheduled retry. A failed commit can replay a previously projected event; transactional projection deduplication remains the correctness boundary. Consumer poll size, subscription, topic initialization, shutdown and scheduling are unchanged.
 
 Four new core tests cover processing-before-commit, multi-partition rewind that excludes committed records, replay after commit failure and no commit on DLQ failure. Existing real Kafka tests retain schema validation, redaction and duplicate-delivery coverage. No API/event schema, migration or dependency changed. Messaging, media/export and remaining operational workflows still require migration.
+
+Executed verification for event consumption:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **210 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test --workers=2`: contract consistency, strict TypeScript and **all 34 real-service journeys passed**, no retries.
+
+No AWS deployment occurred. Messaging, media/export and remaining operational workflows remain tracked separately.
+
+
+## Messaging read-side migration checkpoint
+
+Conversation lists and message history now use framework-free messaging values, `MessagingReadUseCases`, `MessagingReadService` and `MessagingReadStore`. The HTTP adapter preserves routes, query defaults and no-store responses. `JdbcMessagingReadStore` retains caller/block filtering, inbox/archive/star filters, name search, unread counting and cursor ordering in SQL. Authorization remains server-side before private history retrieval.
+
+The application layer validates cursors/search bounds and assembles pages. History retains the sampled conversation high-water mark, limits the descending query to 51 rows, exposes 50 in chronological order and returns the same cursor/read sequence metadata. Concurrent later messages remain recoverable by refresh; no new snapshot-isolation guarantee is claimed.
+
+`JdbcMessagingAccess` contains the shared participant/blocking lookup, optional pair/conversation locking, relationship checks and message mapping. The legacy mutation controller delegates to this outer adapter, retaining its original transactions and request validation while returning the same domain response records. Start/send/preferences/read mutations remain the next messaging migration work.
+
+Four core tests cover invalid inputs before persistence, unavailable conversation isolation, high-water/page assembly and conversation cursor boundaries. Existing HTTP/database/browser assertions continue checking private messaging and mutation compatibility. No API schema, migration or dependency changed. Messaging mutations, media/export and remaining operational workflows remain outstanding.
+
+Executed verification for messaging reads:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **214 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test --workers=2`: contract consistency, strict TypeScript and **all 34 real-service journeys passed**, no retries.
+
+No AWS deployment occurred. Messaging mutation and remaining legacy workflow migration stays in the backlog.
+
+
+## Photo object-storage boundary checkpoint
+
+The combined root `PhotoObjects.java` was removed. `media.application.PhotoObjects` is now a framework-free storage port with the existing missing-object outcome. `S3PhotoObjects` implements it in `media.adapter`; S3 client construction and conditional bean wiring reside in `PhotoObjectConfiguration`. `PhotoCleanup` is a lifecycle-managed scheduling adapter calling `PhotoMaintenance`, rather than depending on the root `ProfilePhotos` implementation. The latter implements this port as a deliberate transitional boundary.
+
+`PhotoLimits.MAX_BYTES` owns the existing 2 MiB bound shared by HTTP ingestion and bounded object reads, removing the S3 adapter's dependency on the HTTP controller. Private object keys, PNG content type, AES256 encryption, endpoint/path-style overrides, SDK timeouts, credential resolution, idempotent delete and missing/read error handling are preserved. Client shutdown and the dedicated bounded cleanup scheduler retain their existing lifecycle.
+
+Photo save/read/remove orchestration, cleanup-intent transactions, local repair locking and profile authorization remain in the existing implementation for a subsequent slice. This boundary refactor does not claim the entire media workflow is framework-independent. A new LocalStack integration test checks encryption metadata, bounded oversized reads, delete retries and missing-object semantics; existing tests retain upload failure preservation, collection, private exports and no-resurrection local recovery.
+
+No API, storage key, database migration or dependency change was introduced. Messaging mutations, photo orchestration, exports and remaining operational workflows remain outstanding.
+
+Executed verification for photo object-storage boundaries:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **215 tests**, zero failures, errors or skips, including LocalStack S3 tests.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test --workers=2`: contract consistency, strict TypeScript and **all 34 real-service journeys passed**, no retries.
+
+No AWS deployment occurred. Photo orchestration, messaging mutations, exports and other remaining workflows stay in the backlog.
+
+
+## Export queue/generation and infrastructure boundary checkpoint
+
+`ExportQueueUseCases`/`ExportQueueService` now own queue operations through `ExportQueueStore` and the transaction port. `ExportWork` owns terminal-attempt/failure classification. `JdbcExportQueueStore` preserves expiry cleanup, exhausted-lease recovery, SKIP LOCKED selection, two-minute leases, attempt-fenced completion/failure updates, 30-second retry availability and 24-hour download expiry.
+
+`ExportGenerationService` orchestrates queue claims, `ExportSnapshot` generation and metrics, handling recoverable failures without logging personal data. `AccountExportWorker` is now a scheduled adapter. `AccountDataSnapshot` implements the snapshot port and throws its framework-free TooLarge outcome; its existing repeatable-read/timeout and owner-scoped bounded SQL remain intact pending full snapshot extraction. The old root queue and worker were removed. Export HTTP lifecycle endpoints remain legacy and retain recent-authentication requirements.
+
+Already-separated infrastructure moved to explicit adapter packages: `SearchHistoryRetention` to searchhistory.adapter, `MemberPairLock` to shared.adapter, and `Security`/`LocalContainerIdentity` to identity.adapter. Their executable behavior is unchanged. `Application` intentionally remains at the root as the Spring Boot scanning entry point. Four core tests cover terminal retries, oversized snapshots, stale completion, retry-store outages and atomic lease acquisition.
+
+No API schema, database migration or dependency changed. Remaining work includes messaging mutations, photo orchestration/controllers, export HTTP lifecycle and snapshot adapters. These are not marked complete by moving infrastructure classes.
+
+Executed verification for export queue/generation and infrastructure boundaries:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **219 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test --workers=2`: contract consistency, strict TypeScript and **all 34 real-service journeys passed**, no retries, including data export and identity flows.
+
+No AWS deployment occurred. Messaging mutations, photo orchestration, export HTTP lifecycle and snapshot extraction remain tracked separately.
+
+
+## Messaging mutation migration checkpoint
+
+Conversation start, message send, preferences and read acknowledgments now delegate through `MessagingWriteUseCases` and `MessagingWriteService`. `MessagingWriteStore` and `MessagingSignals` isolate persistence and realtime registration. `PreviousMessage` owns exact retry comparison. HTTP request annotations and response/cache/status behavior remain in `MessagingWriteController`; the root `MessagingController` was removed.
+
+The JDBC adapter retains member-pair then conversation locking with authorization recheck, accepted-connection requirements, conflict-safe message insertion and atomic sequence/archive updates. Identical retries return the existing message without incrementing sequence or notifying again. New sends register the after-commit signal within the write transaction, then advance the sequence and unarchive both participants. Preference updates remain caller-specific and versioned; read acknowledgments remain monotonic and bounded by the locked latest sequence.
+
+Four core tests cover duplicate retries, cross-conversation ID conflicts, invalid read bounds/stale preferences and blocked starts. A new PostgreSQL test fails sequence advancement after message insert and signal registration, verifying message/sequence rollback and suppressed delivery. Existing concurrency, privacy, send/read and offline browser checks remain unchanged.
+
+No API schema, database migration or dependency changed. Photo orchestration, export HTTP lifecycle and snapshot extraction remain. The root Spring Boot `Application` intentionally remains the scanning entry point.
+
+Executed verification for messaging mutations:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **224 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test --workers=2`: contract consistency, strict TypeScript and **all 34 real-service journeys passed**, no retries.
+
+No AWS deployment occurred. Photo orchestration, export HTTP lifecycle and snapshot extraction remain tracked separately.
+
+
+## Export HTTP lifecycle migration checkpoint
+
+`ExportLifecycleService` now owns export list/request/download/cancel workflows through `ExportLifecycleStore` and the transaction port. `ExportRecord` projects expired READY records using an injected clock. `AccountExportController` moved to exports.adapter and retains recent-authentication checks for sensitive operations, existing routes, download headers and no-store behavior. The root controller was removed.
+
+Request preserves profile locking, owner-scoped replay before pending/throttle checks, the 10-minute database throttle and conflict-safe insertion with audit. Throttling remains an empty 429 with Retry-After 600. Download checks ownership/state, then locks and rechecks the ready/unexpired payload using database time before auditing. The shared error translation adds GONE to preserve 410 expiry responses. Cancellation retains conditional payload/lease clearing and audits only a changed row. All mutation/audit groups retain their transaction boundaries.
+
+Four core tests cover replay, throttling without writes, expiry races and private/idempotent cancellation. A PostgreSQL test verifies failed request auditing rolls back the queue record. Existing recent-authentication, owner privacy, generation/download and cancellation integration tests remain unchanged.
+
+No API schema, migration or dependency changed. Photo orchestration and export snapshot extraction remain; the root Spring Boot entry point is intentionally retained.
+
+
+## Export snapshot adapter boundary checkpoint
+
+Moved `AccountDataSnapshot` into `exports.adapter`, implementing the existing `ExportSnapshot` output port. Photo reads now depend on the framework-independent `media.application.OwnerPhoto` port; `ProfilePhotos` implements that port. Export serialization, owner-scoped SQL, row/byte limits, repeatable-read isolation and timeout remain unchanged. Integration tests import the relocated adapter. `Application` intentionally remains the root Spring scanning entry point. Photo HTTP authorization and storage orchestration still require extraction; this checkpoint does not claim those migrations are complete.
+
+Verification: `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test` passed all 229 tests, with no failures, errors or skips. The previous interrupted browser verification could not be recovered; browser verification of these latest changes is not claimed.
+
+
+## Photo HTTP and visibility boundary checkpoint
+
+Moved `ProfilePhotoController` and `ProfilePhotos` into `media.adapter`. The controller depends on `ProfilePhotoUseCases` and contains no JDBC access. `ProfilePhotoService` uses `ProfilePhotoStore` to authorize shared reads before retrieving object bytes, preserving anonymous 401 and signed-in 404 behavior. The JDBC visibility predicate (public/member visibility, ownership and bilateral blocks) is unchanged. Export snapshots use the same application interface for owner reads. Image normalization, response headers, upload limits, repair transactions and cleanup SQL remain unchanged. `Application` remains the root scanning entry point.
+
+This is an incremental migration: `ProfilePhotos` still combines persistence and storage orchestration inside an adapter; extracting its save/repair/collection policies and transport-independent failures remains pending. Merely relocating it does not complete that work.
+
+Verification: full Maven backend suite passed 229 tests. Subsequently added two application tests covering denied access without storage reads and authorization-before-read ordering; both passed along with the architecture compilation guard using `-Dtest=ProfilePhotoUseCasesTest,HexagonalArchitectureTest test`. Browser journeys were not rerun for this checkpoint. No API schema, migration or dependency changed.

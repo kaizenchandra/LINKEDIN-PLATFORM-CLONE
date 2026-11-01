@@ -1,4 +1,6 @@
 package com.meridian;
+import com.meridian.exports.adapter.AccountDataSnapshot;
+import com.meridian.searchhistory.adapter.SearchHistoryRetention;
 import com.meridian.notifications.adapter.ConnectionAccepted;
 import com.meridian.notifications.adapter.ApplicationChanged;
 import com.meridian.notifications.adapter.NotificationProjector;
@@ -25,7 +27,8 @@ class ProfileIntegrationTest {
  @Container static PostgreSQLContainer<?> postgres=new PostgreSQLContainer<>("postgres:17");
  @DynamicPropertySource static void database(DynamicPropertyRegistry r){r.add("spring.datasource.url",postgres::getJdbcUrl);r.add("spring.datasource.username",postgres::getUsername);r.add("spring.datasource.password",postgres::getPassword);}
  @Autowired MockMvc mvc;
- @Autowired AccountExportQueue exportQueue;
+ @Autowired com.meridian.exports.application.ExportQueueUseCases exportQueue;
+ @Autowired com.meridian.exports.application.ExportGenerationUseCases exportGeneration;
  @Autowired AccountDataSnapshot exportSnapshots;
  @Autowired SearchHistoryRetention historyRetention;
  @Autowired SessionUseCases sessionAccess;
@@ -101,6 +104,28 @@ class ProfileIntegrationTest {
   org.junit.jupiter.api.Assertions.assertEquals(id,service.publish(subject,id,1).id());
   org.junit.jupiter.api.Assertions.assertEquals(1,database.queryForObject("select count(*) from content_post where id=?",Integer.class,id));
   org.junit.jupiter.api.Assertions.assertEquals(2L,database.queryForObject("select version from post_draft where id=?",Long.class,id));
+ }
+
+ @Test void exportRequestAuditFailureRollsBackQueuedExport()throws Exception{
+  organizationMember("export-audit-rollback");var id=java.util.UUID.randomUUID();
+  var store=org.mockito.Mockito.spy(new com.meridian.exports.adapter.JdbcExportLifecycleStore(database));
+  org.mockito.Mockito.doThrow(new IllegalStateException("Audit unavailable")).when(store).audit(id,"REQUESTED");
+  var service=new com.meridian.exports.application.ExportLifecycleService(store,networkTransactions,java.time.Clock.systemUTC());
+  org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->service.request("export-audit-rollback",id));
+  org.junit.jupiter.api.Assertions.assertEquals(0,database.queryForObject("select count(*) from account_export where id=?",Integer.class,id));
+ }
+
+ @Test void failedMessageSequenceUpdateRollsBackInsertAndSignal()throws Exception{
+  var fixture=chat("message-rollback");var conversation=java.util.UUID.fromString(fixture.id());var message=java.util.UUID.randomUUID();
+  var store=org.mockito.Mockito.spy(new com.meridian.messaging.adapter.JdbcMessagingWriteStore(database,new com.meridian.messaging.adapter.JdbcMessagingAccess(database)));
+  org.mockito.Mockito.doThrow(new IllegalStateException("Sequence unavailable")).when(store).advance(conversation);
+  var delivered=new java.util.concurrent.atomic.AtomicInteger();
+  com.meridian.messaging.application.MessagingSignals signals=subjects->org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){public void afterCommit(){delivered.incrementAndGet();}});
+  var service=new com.meridian.messaging.application.MessagingWriteService(store,signals,networkTransactions);
+  org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->service.send("message-rollback-a",conversation,message,"Text"));
+  org.junit.jupiter.api.Assertions.assertEquals(0,database.queryForObject("select count(*) from direct_message where id=?",Integer.class,message));
+  org.junit.jupiter.api.Assertions.assertEquals(0L,database.queryForObject("select last_sequence from direct_conversation where id=?",Long.class,conversation));
+  org.junit.jupiter.api.Assertions.assertEquals(0,delivered.get());
  }
 
  @Test void projectionFailureRollsBackDeduplicationAndAllowsReplay()throws Exception{
@@ -253,7 +278,7 @@ class ProfileIntegrationTest {
   String subject="export-large";var user=recent(subject);mvc.perform(get("/api/v1/me").with(user));
   database.update("insert into content_post(id,author,body,audience) select gen_random_uuid(),?,repeat('x',3000),'ONLY_ME' from generate_series(1,4000)",subject);
   var id=java.util.UUID.randomUUID();mvc.perform(put("/api/v1/me/exports/"+id).with(user).with(csrf())).andExpect(status().isOk());
-  new AccountExportWorker(exportQueue,exportSnapshots,new io.micrometer.core.instrument.simple.SimpleMeterRegistry()).tick();
+  exportGeneration.generateNext();
   mvc.perform(get("/api/v1/me/exports").with(user)).andExpect(jsonPath("$[0].status").value("FAILED")).andExpect(jsonPath("$[0].failure").value("TOO_LARGE"));
   org.junit.jupiter.api.Assertions.assertNull(database.queryForObject("select payload from account_export where id=?",byte[].class,id));
  }

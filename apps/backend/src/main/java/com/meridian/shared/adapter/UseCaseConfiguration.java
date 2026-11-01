@@ -18,6 +18,8 @@ import org.springframework.context.annotation.Configuration;
 /** Composition root: only outer code knows concrete application implementations. */
 @Configuration
 public class UseCaseConfiguration {
+ @Bean com.meridian.messaging.application.MessagingWriteUseCases messagingWrites(com.meridian.messaging.application.MessagingWriteStore store,com.meridian.messaging.application.MessagingSignals signals,Transactions transactions){return new com.meridian.messaging.application.MessagingWriteService(store,signals,transactions);}
+ @Bean com.meridian.messaging.application.MessagingReadUseCases messagingReads(com.meridian.messaging.application.MessagingReadStore store){return new com.meridian.messaging.application.MessagingReadService(store);}
  @Bean NotificationProjectionUseCases notificationProjections(NotificationProjectionStore store,NotificationSignals signals,Transactions transactions){return new NotificationProjectionService(store,signals,transactions);}
  @Bean com.meridian.applications.application.ApplicationSubmissionUseCases applicationSubmissions(com.meridian.applications.application.ApplicationSubmissionStore store,com.meridian.applications.application.ApplicationSignals signals,Transactions transactions){return new com.meridian.applications.application.ApplicationSubmissionService(store,signals,transactions);}
  @Bean com.meridian.applications.application.ApplicationStatusUseCases applicationStatuses(com.meridian.applications.application.ApplicationStatusStore store,com.meridian.applications.application.ApplicationSignals signals,Transactions transactions){return new com.meridian.applications.application.ApplicationStatusService(store,signals,transactions);}

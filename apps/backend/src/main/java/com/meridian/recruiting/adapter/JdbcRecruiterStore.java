@@ -1,6 +1,6 @@
 package com.meridian.recruiting.adapter;
 import java.util.*;
-import com.meridian.MemberPairLock;
+import com.meridian.shared.adapter.MemberPairLock;
 import com.meridian.recruiting.application.RecruiterStore;
 import com.meridian.recruiting.domain.RecruiterAccess.*;
 import org.springframework.jdbc.core.JdbcTemplate;
