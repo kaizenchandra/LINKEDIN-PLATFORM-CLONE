@@ -46,7 +46,7 @@ Arrows to ports represent source dependencies; at runtime the application calls 
 | `com.meridian.organizations.domain/application/adapter` | Company values, ownership/retry/follow use cases, persistence port and HTTP/JDBC adapters |
 | `com.meridian.realtime.adapter` | WebSocket transport, authenticated handshake, bounded delivery and immutable after-commit refresh events; session checks call identity use cases |
 | `com.meridian.applications.domain/application/adapter` | Application response values, submission/list/history/resume/status use cases, answer/resume policies, persistence/signal ports and HTTP/JDBC adapters |
-| `com.meridian.events.domain/application/adapter` | Outbox values and publication use case, persistence/publishing/metrics ports, JDBC/Kafka adapters and worker configuration |
+| `com.meridian.events.domain/application/adapter` | Outbox/delivery values, publication and consumption use cases, persistence/publishing/processing/offset ports, JDBC/Kafka adapters and worker configuration |
 | `com.meridian.shared.application` | Transaction port and transport-independent failure reasons |
 | `com.meridian.shared.adapter` | Spring transaction implementation, HTTP failure translation and bean composition |
 | `com.meridian` | Existing entry point, security and not-yet-migrated workflows; retention scheduler delegates through the new input port |
@@ -410,3 +410,12 @@ Executed verification for outbox publication:
 - From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test --workers=2`: contract consistency, strict TypeScript and **all 34 real-service journeys passed**, no retries.
 
 No AWS deployment occurred. Consumer processing orchestration and remaining legacy workflows remain tracked separately.
+
+
+## Event consumption migration checkpoint
+
+`EventConsumptionService` now owns batch processing, per-partition commit progression and recovery through `EventProcessor` and `DeliveryOffsets`. `EventDelivery` and its partition value contain no Kafka types. The worker maps Kafka records to these values and provides Kafka commit/seek implementations. `NotificationEventProcessor` retains strict JSON envelope parsing, projection dispatch, DLQ send confirmation, application poison-message redaction and quarantine metrics in the outer adapter.
+
+A processed or successfully quarantined record commits its next offset. Projection, quarantine or commit failures seek each affected partition to the earliest still-uncommitted record in the fetched batch, then propagate for scheduled retry. A failed commit can replay a previously projected event; transactional projection deduplication remains the correctness boundary. Consumer poll size, subscription, topic initialization, shutdown and scheduling are unchanged.
+
+Four new core tests cover processing-before-commit, multi-partition rewind that excludes committed records, replay after commit failure and no commit on DLQ failure. Existing real Kafka tests retain schema validation, redaction and duplicate-delivery coverage. No API/event schema, migration or dependency changed. Messaging, media/export and remaining operational workflows still require migration.
