@@ -55,12 +55,9 @@ test('company owners publish and edit while other members discover and follow',a
   await member.goto('/companies');await member.getByRole('button',{name:'Followed companies',exact:true}).click();
   await expect(member.getByRole('link',{name,exact:true})).toBeVisible();
   await member.getByRole('article',{name:'Company '+name,exact:true}).getByRole('link',{name:'View company',exact:true}).click();
-  await member.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('light');
   expect((await new AxeBuilder({page:member}).analyze()).violations).toEqual([]);
   await member.screenshot({path:testInfo.outputPath('company-desktop.png'),fullPage:true});
   await member.setViewportSize({width:390,height:844});
-  await member.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('dark');
-  await expect(member.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
   expect(await member.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
   expect((await new AxeBuilder({page:member}).analyze()).violations).toEqual([]);
   await member.screenshot({path:testInfo.outputPath('company-mobile-dark.png'),fullPage:true});

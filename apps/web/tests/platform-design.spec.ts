@@ -6,14 +6,15 @@ test('shared design covers product pages at desktop, mobile and dark sizes',asyn
  test.setTimeout(240000);
  await register(page,request,'Design');
  const routes=[['/feed','Home feed'],['/network','Invitations (0)'],['/jobs','Discover jobs'],['/messages','Messaging'],['/notifications','Notifications'],['/search','Find people'],['/companies','Companies'],['/applications','My applications'],['/settings','Settings'],['/recruiting','Recruiter access']] as const;
- for(const mode of ['desktop','mobile','dark'] as const){
-  await page.setViewportSize(mode==='mobile'?{width:390,height:844}:{width:1440,height:1000});
+ for(const mode of ['desktop','mobile','tablet','dark'] as const){
+  await page.setViewportSize(mode==='mobile'?{width:390,height:844}:mode==='tablet'?{width:820,height:1180}:{width:1440,height:1000});
   await page.emulateMedia({colorScheme:mode==='dark'?'dark':'light',reducedMotion:'reduce'});
   await page.evaluate(()=>localStorage.setItem('meridian-theme','system'));
   for(const [path,heading] of routes){
    await page.goto(path);
    await expect(page.getByRole('heading',{name:heading,exact:true})).toBeVisible();
    await expect(page.locator('.account-menu').first()).toBeVisible();
+   await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
    if(mode==='mobile'&&path==='/jobs'){
     const box=await page.getByRole('heading',{name:'Discover jobs',exact:true}).boundingBox();
     expect(box!.y).toBeLessThan(600);

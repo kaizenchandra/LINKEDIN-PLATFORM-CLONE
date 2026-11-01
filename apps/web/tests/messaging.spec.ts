@@ -21,6 +21,11 @@ test('durable messages deliver to a second member, acknowledge reads and recover
   await network.getByRole('button',{name:'Accept invitation',exact:true}).click();await expect(network.getByText('Connections: 1',{exact:true})).toBeVisible();
   await b.getByRole('button',{name:'Message',exact:true}).click();await expect(b).toHaveURL(/messages\?conversation=/);
   await expect(b.getByRole('textbox',{name:'Message',exact:true})).toBeVisible();
+  await page.goto('/network?view=connections');
+  await page.getByRole('button',{name:'Message',exact:true}).click();
+  await expect(page).toHaveURL(/messages\?conversation=/);
+  const existingConversation=new URL(page.url()).searchParams.get('conversation');
+  expect(existingConversation).toBe(new URL(b.url()).searchParams.get('conversation'));
   await page.goto('/messages');
   await expect(page.getByText('Live updates connected.',{exact:true})).toBeVisible();
   await expect(b.getByText('Live updates connected.',{exact:true})).toBeVisible();
@@ -93,7 +98,7 @@ test('durable messages deliver to a second member, acknowledge reads and recover
   expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
   await page.screenshot({path:testInfo.outputPath('messages-mobile.png'),fullPage:true});
   await b.goto('http://localhost:3100'+path);
-  b.once('dialog',dialog=>dialog.accept());await b.getByRole('button',{name:'Block member',exact:true}).click();
+  b.once('dialog',dialog=>dialog.accept());await b.getByText('Safety options',{exact:true}).click();await b.getByRole('button',{name:'Block member',exact:true}).click();
   await expect(b.getByRole('button',{name:'Unblock ChatA Member',exact:true})).toBeVisible();
   await expect(page.getByText('Conversation unavailable. It may be blocked.',{exact:true})).toBeVisible({timeout:15000});
   await expect(page.getByText(missed,{exact:true})).toHaveCount(0);

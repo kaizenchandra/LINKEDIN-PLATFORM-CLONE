@@ -77,6 +77,8 @@ public class AccountDataSnapshot implements ExportSnapshot {
   queries.put("submittedReports","select to_jsonb(t)-'reporter' from content_report t where reporter=?");
   queries.put("notifications","select to_jsonb(t)-'recipient'-'actor' from notification t where recipient=?");
   queries.put("sessionRevocations","select to_jsonb(t)-'subject' from session_revocation_audit t where subject=?");
+  queries.put("communityListings","select to_jsonb(t)-'owner' from community_entry t where owner=?");
+  queries.put("communityMemberships","select to_jsonb(t)-'subject' from community_membership t where subject=?");
   return queries;
  }
 }

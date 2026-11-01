@@ -33,12 +33,8 @@ test('people discovery is opt-in and connects search to follow and invitations',
   await visitor.screenshot({path:testInfo.outputPath('search-desktop.png'),fullPage:true});
   await visitor.setViewportSize({width:390,height:844});
   expect(await visitor.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
-  await visitor.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('dark');
-  await expect(visitor.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
   expect((await new AxeBuilder({page:visitor}).analyze()).violations).toEqual([]);
   await visitor.screenshot({path:testInfo.outputPath('search-mobile-dark.png'),fullPage:true});
-  await visitor.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('light');
-  await expect(visitor.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
   await visitor.setViewportSize({width:1280,height:720});
   await result.getByRole('link',{name:'View profile',exact:true}).click();
   await visitor.getByRole('button',{name:'Follow',exact:true}).click();await expect(visitor.getByRole('button',{name:'Unfollow',exact:true})).toBeVisible();
@@ -50,7 +46,7 @@ test('people discovery is opt-in and connects search to follow and invitations',
   await visitor.goto(memberUrl);await expect(visitor.getByRole('heading',{name,exact:true})).toBeVisible();
   await discovery.getByRole('checkbox').click();await expect(discovery.getByRole('checkbox')).toBeChecked();await expect(discovery.getByRole('checkbox')).toBeEnabled();
   visitor.once('dialog',dialog=>dialog.accept());
-  await visitor.getByRole('button',{name:'Block member',exact:true}).click();
+  await visitor.getByText('Safety options',{exact:true}).click();await visitor.getByRole('button',{name:'Block member',exact:true}).click();
   await expect(visitor.getByRole('button',{name:'Unblock '+name,exact:true})).toBeVisible();
   await visitor.goto('/search?q='+label);await expect(status).toHaveText('No matching people. Try another name, headline or location.');
  }finally{await context.close()}

@@ -12,7 +12,7 @@ test('profile applications persist, retry safely, synchronize review and allow w
  try{
   const candidate=await context.newPage();await register(candidate,request,'ApplicationCandidate');
   await page.goto('/applications?view=RECEIVED&job='+first);await expect(page.getByText('Live updates connected.',{exact:true})).toBeVisible();
-  await candidate.goto('/jobs/'+first);const panel=candidate.getByRole('region',{name:'Job application',exact:true});
+  await candidate.goto('/jobs/'+first);await candidate.getByRole('button',{name:'Easy Apply',exact:true}).click();const panel=candidate.locator('section[aria-label="Job application"]');
   await panel.getByRole('textbox',{name:'Application statement',exact:true}).fill('My private statement for this fictional role.');
   await expect(panel.getByRole('button',{name:'Submit application',exact:true})).toBeDisabled();
   const file=panel.getByLabel('Resume (optional .txt)',{exact:true}),resumeText='Fictional candidate\nSkills: Java, TypeScript — expérience';
@@ -26,18 +26,17 @@ test('profile applications persist, retry safely, synchronize review and allow w
   await panel.getByText('Preview selected resume',{exact:true}).click();
   await expect(panel.getByText(resumeText,{exact:true})).toBeVisible();
   await panel.getByRole('checkbox',{name:'Share these application details with this company'}).check();
+  await panel.getByRole('button',{name:'Review application',exact:true}).click();
+  await expect(panel.getByRole('region',{name:'Application review'})).toContainText('My private statement for this fictional role.');
+  await panel.getByRole('button',{name:'Hide review',exact:true}).click();
   expect((await new AxeBuilder({page:candidate}).analyze()).violations).toEqual([]);
   await candidate.evaluate(()=>window.scrollTo(0,0));
   await candidate.screenshot({path:testInfo.outputPath('resume-upload-desktop.png'),fullPage:true});
   await candidate.setViewportSize({width:390,height:844});
   expect(await candidate.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-  await candidate.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('dark');
-  await expect(candidate.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
   expect((await new AxeBuilder({page:candidate}).analyze()).violations).toEqual([]);
   await candidate.evaluate(()=>window.scrollTo(0,0));
   await candidate.screenshot({path:testInfo.outputPath('resume-upload-mobile-dark.png'),fullPage:true});
-  await candidate.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('light');
-  await expect(candidate.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
   await candidate.setViewportSize({width:1280,height:900});
   let intercepted=false;
   await candidate.route('**/api/v1/jobs/'+first+'/application',async route=>{if(intercepted){await route.continue();return}intercepted=true;const response=await route.fetch();await new Promise<void>(resolve=>{release=resolve});try{await route.fulfill({response})}catch{/* Real response deliberately exceeds UI deadline. */}});
@@ -68,7 +67,7 @@ test('profile applications persist, retry safely, synchronize review and allow w
   await expect(timeline.getByText('Accepted',{exact:true})).toBeVisible();
   await review.getByText('View application history',{exact:true}).click();
   await expect(review.getByRole('list',{name:'Application history'}).getByRole('listitem')).toHaveCount(3);
-  await candidate.goto('/jobs/'+second);await panel.getByRole('textbox',{name:'Application statement',exact:true}).fill('Second private statement.');await panel.getByRole('checkbox').check();await panel.getByRole('button',{name:'Submit application',exact:true}).click();await expect(panel.getByText('SUBMITTED',{exact:true})).toBeVisible();await panel.getByRole('link',{name:'Track my application',exact:true}).click();
+  await candidate.goto('/jobs/'+second);await candidate.getByRole('button',{name:'Easy Apply',exact:true}).click();await panel.getByRole('textbox',{name:'Application statement',exact:true}).fill('Second private statement.');await panel.getByRole('checkbox').check();await panel.getByRole('button',{name:'Submit application',exact:true}).click();await expect(panel.getByText('SUBMITTED',{exact:true})).toBeVisible();await panel.getByRole('link',{name:'Track my application',exact:true}).click();
   await page.goto('/applications?view=RECEIVED&job='+second);await expect(page.getByRole('button',{name:'Start review',exact:true})).toBeVisible();
   candidate.once('dialog',dialog=>dialog.accept());await candidate.getByRole('button',{name:'Withdraw application',exact:true}).click();await expect(page.getByText('WITHDRAWN',{exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'Start review',exact:true})).toHaveCount(0);
   await candidate.goto('/applications');await expect(candidate.getByRole('article')).toHaveCount(2);

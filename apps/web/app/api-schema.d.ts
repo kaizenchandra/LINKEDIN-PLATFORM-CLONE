@@ -4,6 +4,58 @@
  */
 
 export interface paths {
+    "/community": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Signed-in directory, newest 100 listings. Membership counts are public to members. */
+        get: operations["listCommunity"];
+        put?: never;
+        /** @description Session and CSRF required. Creates a member-owned listing. Duplicate ID returns 409. */
+        post: operations["createCommunity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/community/{id}/membership": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Session and CSRF required. Idempotently join or leave as the current member only. */
+        put: operations["setCommunityMembership"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/community/catch-up": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Latest 50 member-visible posts from accepted connections within 30 days. Deleted, moderated and blocked content excluded. No-store. */
+        get: operations["getNetworkCatchUp"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/search-history": {
         parameters: {
             query?: never;
@@ -1550,6 +1602,33 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        CommunityDraft: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "GROUP" | "EVENT" | "NEWSLETTER";
+            title: string;
+            description: string;
+            /** Format: date-time */
+            startsAt: string | null;
+            location: string;
+        };
+        CommunityEntry: components["schemas"]["CommunityDraft"] & {
+            joined: boolean;
+            /** Format: int64 */
+            members: number;
+            owned: boolean;
+        };
+        NetworkUpdate: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            memberId: string;
+            name: string;
+            text: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
         SearchHistoryEntry: {
             /** Format: uuid */
             id: string;
@@ -2096,6 +2175,11 @@ export interface components {
             about: string;
         };
         Connection: {
+            /**
+             * Format: uuid
+             * @description Other member public identifier for starting an authorized conversation
+             */
+            memberId: string;
             /** Format: uuid */
             id: string;
             name: string;
@@ -2127,6 +2211,117 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listCommunity: {
+        parameters: {
+            query: {
+                kind: "GROUP" | "EVENT" | "NEWSLETTER";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Listings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityEntry"][];
+                };
+            };
+        };
+    };
+    createCommunity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommunityDraft"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid listing */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ID conflict or profile missing */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    setCommunityMembership: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    joined: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Membership saved */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Listing unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getNetworkCatchUp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Network activity */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkUpdate"][];
+                };
+            };
+        };
+    };
     getMySearchHistory: {
         parameters: {
             query?: never;

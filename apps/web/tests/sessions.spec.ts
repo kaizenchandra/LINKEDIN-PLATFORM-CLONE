@@ -26,8 +26,7 @@ test('settings persist preferences and revoke individual and all real browser se
  expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
  await page.screenshot({path:testInfo.outputPath('settings-security-desktop.png'),fullPage:true});
  await page.getByRole('link',{name:'Account preferences',exact:true}).click();
- await page.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('dark');await expect(page.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
- await page.reload();await expect(page.getByRole('combobox',{name:'Appearance',exact:true})).toHaveValue('dark');
+ await page.reload();await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
  await page.getByRole('link',{name:'Sign in & security',exact:true}).click();await expect(sessions.getByRole('listitem')).toHaveCount(2);
  await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
  expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);

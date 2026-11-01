@@ -25,8 +25,8 @@ test('job questions reject stale submissions and preserve private answer snapsho
  await page.reload();await expect(editor).toContainText('Describe a technical project');await expect(editor.getByRole('listitem').first()).toContainText('Anything else to share?');
  const context=await browser.newContext();
  try{
-  const candidate=await context.newPage();await register(candidate,request,'QuestionApplicant');await candidate.goto('/jobs/'+job);
-  const form=candidate.getByRole('region',{name:'Job application',exact:true});
+  const candidate=await context.newPage();await register(candidate,request,'QuestionApplicant');await candidate.goto('/jobs/'+job);await candidate.getByRole('button',{name:'Easy Apply',exact:true}).click();
+  const form=candidate.locator('section[aria-label="Job application"]');
   await form.getByLabel('Application statement',{exact:true}).fill('My private statement.');
   await form.getByRole('checkbox',{name:'Share these application details with this company'}).check();
   await expect(form.getByRole('button',{name:'Submit application',exact:true})).toBeDisabled();

@@ -9,7 +9,7 @@ public final class Network {
   public boolean permits(String actor,Pair pair){return switch(this){case ACCEPT,IGNORE->actor.equals(pair.recipient());case WITHDRAW->actor.equals(pair.sender());case REMOVE->actor.equals(pair.sender())||actor.equals(pair.recipient());};}
  }
  public record Pair(String sender,String recipient){public Set<String> subjects(){return Set.of(sender,recipient);}}
- public record Connection(UUID id,String name,String state,boolean incoming,long version){}
+ public record Connection(UUID id,String name,String state,boolean incoming,long version,UUID memberId){}
  public record FollowState(boolean following){}
  public record Member(UUID memberId,String name,boolean visible){}
  public record FollowRow(Member member,long sequence){}

@@ -2,7 +2,6 @@
 import {FormEvent,useEffect,useRef,useState} from 'react';
 import SiteHeader from '../site-header';
 import {useSearchHistory,SearchHistoryPanel} from '../search-history';
-import Appearance from '../appearance';
 import {messagingFetch} from '../messaging-api';
 import type {components} from '../api-schema';
 type Kind='people'|'companies'|'jobs'|'posts';
@@ -43,5 +42,5 @@ export default function Search(){
  {results.kind==='companies'&&results.items.map(company=><article className="profile-card search-result" key={company.id}><h2><a href={'/companies/'+company.id}>{company.name}</a></h2><p>{company.industry} · {company.location}</p><p>{company.about}</p><a href={'/companies/'+company.id}>View company</a></article>)}
  {results.kind==='jobs'&&results.items.map(job=><article className="profile-card search-result" key={job.id}><h2><a href={'/jobs/'+job.id}>{job.title}</a></h2><p>{job.companyName} · {job.location} · {job.workplace.toLowerCase()}</p><a href={'/jobs/'+job.id}>View job</a></article>)}
  {results.kind==='posts'&&results.items.map(post=><article className="profile-card search-result" key={post.id}><h2>{post.authorName}</h2><p className="muted">{new Date(post.createdAt).toLocaleDateString()} · {post.audience==='ONLY_ME'?'Only you':'Members'}{post.edited?' · Edited':''}</p><p className="search-post-body">{post.text}</p><p>{post.reactionCount} reactions</p></article>)}
- {cursor&&criteria&&<button className="outline" disabled={busy} onClick={()=>void load(criteria,cursor)}>More {kind}</button>}</div><aside className="profile-sidebar" aria-label="Search preferences"><SearchHistoryPanel history={history} onReuse={next=>{setQuery(next.q);setLocation(next.location);navigate(next)}}/><section className="sidebar-card"><h2>Your discovery settings</h2><p className="muted">People search is opt-in. Blocked members cannot find one another or read each other’s posts.</p><a href="/#settings">Manage visibility</a></section><section className="sidebar-card"><h2>Display preferences</h2><Appearance signedIn={!!name}/></section></aside></main></>;
+ {cursor&&criteria&&<button className="outline" disabled={busy} onClick={()=>void load(criteria,cursor)}>More {kind}</button>}</div><aside className="profile-sidebar" aria-label="Search preferences"><SearchHistoryPanel history={history} onReuse={next=>{setQuery(next.q);setLocation(next.location);navigate(next)}}/><section className="sidebar-card"><h2>Your discovery settings</h2><p className="muted">People search is opt-in. Blocked members cannot find one another or read each other’s posts.</p><a href="/#settings">Manage visibility</a></section></aside></main></>;
 }

@@ -91,7 +91,7 @@ test('text posts persist, enforce audience and blocking, and delete across accou
  await authorDiscussion.getByRole('button',{name:'Refresh comments',exact:true}).click();
  await expect(authorDiscussion.getByRole('button',{name:'Refresh comments',exact:true})).toBeEnabled();
  await expect(authorDiscussion.getByText(commentText,{exact:true})).toHaveCount(0);
- await reader.goto(memberPath!);reader.once('dialog',dialog=>dialog.accept());await reader.getByRole('button',{name:'Block member',exact:true}).click();
+ await reader.goto(memberPath!);reader.once('dialog',dialog=>dialog.accept());await reader.getByText('Safety options',{exact:true}).click();await reader.getByRole('button',{name:'Block member',exact:true}).click();
  await expect(reader.getByRole('button',{name:'Unblock Writer Member',exact:true})).toBeVisible();
  await reader.goto('/feed');await expect(reader.getByRole('button',{name:'Refresh feed',exact:true})).toBeEnabled();
  await expect(reader.getByText(text,{exact:true})).toHaveCount(0);

@@ -5,7 +5,6 @@ test.use({trace:'off'});
 test('reference-inspired profile works at desktop, mobile and dark sizes',async({page,request},testInfo)=>{
  await page.setViewportSize({width:1440,height:1000});
  await register(page,request,'Taylor');
- await page.getByRole('combobox',{name:'Appearance'}).selectOption('light');
  await page.getByRole('button',{name:'Edit introduction',exact:true}).click();
  await expect(page.getByRole('dialog')).toBeVisible();
  await page.getByRole('textbox',{name:'headline',exact:true}).fill('Product designer · Building thoughtful digital experiences');
@@ -30,18 +29,15 @@ test('reference-inspired profile works at desktop, mobile and dark sizes',async(
  await page.goto('/');
  await expect(page.getByRole('heading',{name:'Taylor Member',exact:true})).toBeVisible();
  await expect(page.getByRole('heading',{name:'Senior Product Designer',exact:true})).toBeVisible();
- await page.screenshot({path:testInfo.outputPath('desktop-light.png')});
+ await page.screenshot({path:testInfo.outputPath('desktop-default-dark.png')});
  expect((await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa','wcag22aa']).analyze()).violations).toEqual([]);
- await page.getByRole('combobox',{name:'Appearance'}).selectOption('dark');
- await expect(page.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
  await page.evaluate(()=>window.scrollTo(0,0));
  await page.screenshot({path:testInfo.outputPath('desktop-dark.png')});
  expect((await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa','wcag22aa']).analyze()).violations).toEqual([]);
- await page.getByRole('combobox',{name:'Appearance'}).selectOption('light');
  await page.setViewportSize({width:390,height:844});
  await page.evaluate(()=>window.scrollTo(0,0));
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
- await page.screenshot({path:testInfo.outputPath('mobile-light.png')});
+ await page.screenshot({path:testInfo.outputPath('mobile-dark.png')});
  await page.locator('.account-menu summary').click();
  await expect(page.getByRole('link',{name:'Account security',exact:true})).toBeVisible();
  await page.locator('.account-menu summary').click();

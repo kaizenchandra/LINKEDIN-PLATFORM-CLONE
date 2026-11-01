@@ -33,3 +33,31 @@ Next recommended sequence: remaining identity flows → data lifecycle/privacy �
 AUTH-S01–S03 now have a guest landing page and branded real email sign-in/registration integration; see `authentication-screens.md`. Social-provider registration (Google/Apple), mobile login, remembered-session policy and legal consent remain outstanding. EXTRA-S01–S04 add explicit job split-pane/dismissal presentation, event creation/listing, followed-company list presentation and newsletter creation/subscriptions. Preserve these as REM-UI-JOBS-002, REM-EVENTS-001, REM-NETWORK-PAGES-002 and REM-NEWSLETTER-001 respectively; all remain Planned beyond existing jobs/company workflow coverage.
 
 Photo migration checkpoint: HTTP and visibility boundaries now use application ports; storage save/repair/collection orchestration remains in `media.adapter.ProfilePhotos` pending extraction. See the architecture checkpoint for current verification evidence.
+
+## Network community slice
+
+Implemented and locally verified: Catch up (latest 50 visible connection posts within 30 days), member-created group/event/newsletter listings, group join/leave, event attendance/cancellation and newsletter subscribe/unsubscribe. V44 stores listings and unique memberships with deletion cascades. Owned listings/memberships are included in account exports. OpenAPI generates frontend types. Directory results are bounded to the newest 100 entries.
+
+Remaining: group discussions/moderators/private membership, newsletter issue authoring/publication/email delivery, event editing/cancellation/capacity/reminders, directory pagination/search, listing moderation and creation throttles, career milestones and birthday consent. Listing creation is conflict-detected by UUID; the UI does not yet preserve a request UUID across an uncertain-response retry. This is not full LinkedIn feature parity.
+
+Validation: full Java 21 Maven clean test passed 233 tests (zero failures/errors/skips); generated contracts, TypeScript and Next production build passed. Docker Compose rebuilt backend/web and passed readiness. `npx playwright test community.spec.ts --workers=1` passed the real-service creation/join/reload/leave journey for all three types plus Catch up empty state. Other browser journeys were not rerun in this checkpoint.
+
+## UI alignment and navigation audit
+
+Adjusted recommendation cards so their profile actions share a baseline, improved wrapping in card headings, bounded account menus to the viewport, increased mobile menu/action touch targets, and standardized community panel spacing. Network subviews now use a validated `view` query parameter with refresh and Back/Forward restoration. Dark mode remains fixed as requested.
+
+Verification: rebuilt local web container passed readiness, TypeScript passed, and four Playwright journeys passed (auth design, profile design, community persistence/navigation, platform design). Platform coverage includes feed, network, jobs, messaging, notifications, search, companies, applications, settings and recruiting at desktop, mobile, tablet and desktop dark emulation. Those routes passed horizontal overflow and automated WCAG-tagged axe checks; screenshots were generated under apps/web/test-results. This is automated coverage, not a complete manual accessibility certification or verification of every dynamic detail state. The original snapshot directory is absent from this checkout, preventing exact reference-image comparison.
+
+## Connection-to-message integration
+
+Accepted connections now expose a Message action in both the Network page and profile network section. The network response adds the other member's public `memberId`; OpenAPI and generated frontend types are aligned. Starting a message uses the existing authorized conversation use case, which reuses the unique pair conversation and enforces accepted-connection/no-block rules server-side. Pending invitations do not expose the network Message action.
+
+Verification: Java 21 Maven clean test passed 233 tests; contract generation, TypeScript and production build passed. Local backend/web rebuilt and passed readiness. The real two-user messaging Playwright journey passed: invite/accept, start from Connections, reuse the same conversation, persist/send/live receive, read receipts, lost-response retry without duplication, offline recovery, reload persistence and blocking enforcement. No AWS deployment performed.
+
+## Easy Apply job experience
+
+Job details now offer Easy Apply in a native modal dialog with focus containment, Escape/close handling, job/company context, profile disclosure, optional validated text resume, screening answers, consent and an optional review summary. Closing an unsent application asks for confirmation and retains its fields while the page remains mounted. Successful server confirmation closes the dialog and shows the persisted receipt/tracker link. Backend application submission, duplicate prevention, recruiter authorization and notification behavior are reused unchanged. No success is shown before persistence is confirmed.
+
+Verified against the rebuilt local web app and real backend: `npx playwright test applications.spec.ts application-questions.spec.ts application-notifications.spec.ts --workers=1` passed all three journeys. They cover resume validation/download privacy, screening-question revision conflicts, lost-response retry, tracker/recruiter synchronization, withdrawal and event notifications. Production build and TypeScript passed; desktop/mobile axe checks and screenshots are included. `scripts/test-local.sh` remains the isolated dependency smoke test; it does not run these browser journeys.
+
+Limits: resumes remain UTF-8 .txt up to 20 KiB; PDF/Word ingestion and malware scanning are not implemented. Unsent data is not persisted across reloads. Review is optional, and this is not full LinkedIn Easy Apply parity.

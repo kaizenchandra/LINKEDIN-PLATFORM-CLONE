@@ -32,6 +32,29 @@ class ProfileIntegrationTest {
  @Autowired AccountDataSnapshot exportSnapshots;
  @Autowired SearchHistoryRetention historyRetention;
  @Autowired SessionUseCases sessionAccess;
+ @Test void communityMembershipPersistsAndRetriesDoNotDuplicate() throws Exception {
+  organizationMember("community-owner");var owner=oidcLogin().idToken(t->t.subject("community-owner"));
+  mvc.perform(get("/api/v1/community?kind=GROUP")).andExpect(status().isUnauthorized());
+  for(String kind:java.util.List.of("GROUP","EVENT","NEWSLETTER")){
+   var id=java.util.UUID.randomUUID();String body="{\"id\":\""+id+"\",\"kind\":\""+kind+"\",\"title\":\"Test community\",\"description\":\"Fictional\",\"startsAt\":\"2030-01-01T10:00:00Z\",\"location\":\"Online\"}";
+   mvc.perform(post("/api/v1/community").with(owner).contentType("application/json").content(body)).andExpect(status().isForbidden());
+   mvc.perform(post("/api/v1/community").with(owner).with(csrf()).contentType("application/json").content(body)).andExpect(status().isNoContent());
+   mvc.perform(post("/api/v1/community").with(owner).with(csrf()).contentType("application/json").content(body)).andExpect(status().isConflict());
+   for(int n=0;n<2;n++)mvc.perform(put("/api/v1/community/"+id+"/membership").with(owner).with(csrf()).contentType("application/json").content("{\"joined\":true}")).andExpect(status().isNoContent());
+   mvc.perform(get("/api/v1/community?kind="+kind).with(owner)).andExpect(status().isOk()).andExpect(jsonPath("$[0].joined").value(true)).andExpect(jsonPath("$[0].members").value(1));
+   mvc.perform(put("/api/v1/community/"+id+"/membership").with(owner).with(csrf()).contentType("application/json").content("{\"joined\":false}")).andExpect(status().isNoContent());
+   org.junit.jupiter.api.Assertions.assertEquals(0,database.queryForObject("select count(*) from community_membership where entry_id=?",Integer.class,id));
+  }
+ }
+ @Test @org.springframework.transaction.annotation.Transactional void catchUpExcludesPrivateDeletedAndBlockedPosts() throws Exception {
+  organizationMember("catch-reader");organizationMember("catch-author");
+  database.update("insert into connection_request(id,sender,recipient,state) values(?,'catch-reader','catch-author','ACCEPTED')",java.util.UUID.randomUUID());
+  database.update("insert into content_post(id,author,body,audience) values(?,'catch-author','Visible update','MEMBERS'),(?,'catch-author','Private update','ONLY_ME')",java.util.UUID.randomUUID(),java.util.UUID.randomUUID());
+  var reader=oidcLogin().idToken(t->t.subject("catch-reader"));
+  mvc.perform(get("/api/v1/community/catch-up").with(reader)).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(1)).andExpect(jsonPath("$[0].text").value("Visible update"));
+  database.update("insert into member_block(blocker,blocked) values('catch-author','catch-reader')");
+  mvc.perform(get("/api/v1/community/catch-up").with(reader)).andExpect(jsonPath("$.length()").value(0));
+ }
  @Test void notificationPreferenceFailureRollsBackWriteAndSuppressesAfterCommitSignal(){
   String subject="hex-notification-owner";database.update("insert into profile(subject,name) values(?,?)",subject,"Notification owner");
   var store=org.mockito.Mockito.spy(new com.meridian.notifications.adapter.JdbcNotificationStore(database));

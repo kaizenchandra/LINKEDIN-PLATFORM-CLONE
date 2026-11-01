@@ -70,7 +70,7 @@ test('profile sharing is opt-in and disabling blocks another member',async({page
  await ownerNetwork.getByRole('button',{name:'Ignore invitation',exact:true}).click();
  await expect(ownerNetwork.getByRole('button',{name:'Ignore invitation',exact:true})).toHaveCount(0);
  visitor.once('dialog',dialog=>dialog.accept());
- await visitor.getByRole('button',{name:'Block member',exact:true}).click();
+ await visitor.getByText('Safety options',{exact:true}).click();await visitor.getByRole('button',{name:'Block member',exact:true}).click();
  const blocks=visitor.getByRole('region',{name:'Blocked members',exact:true});
  await expect(blocks.getByRole('button',{name:'Unblock Owner Member',exact:true})).toBeVisible();
  await visitor.goto(`http://localhost:3100${path}`);

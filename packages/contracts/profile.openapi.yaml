@@ -7,6 +7,58 @@ servers:
 security:
   - session: []
 paths:
+  /community:
+    get:
+      operationId: listCommunity
+      description: Signed-in directory, newest 100 listings. Membership counts are public to members.
+      parameters:
+        - {in: query, name: kind, required: true, schema: {type: string, enum: [GROUP, EVENT, NEWSLETTER]}}
+      responses:
+        '200':
+          description: Listings
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/CommunityEntry'}}
+    post:
+      operationId: createCommunity
+      description: Session and CSRF required. Creates a member-owned listing. Duplicate ID returns 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CommunityDraft'}
+      responses:
+        '204': {description: Created}
+        '400': {description: Invalid listing}
+        '409': {description: ID conflict or profile missing}
+  /community/{id}/membership:
+    put:
+      operationId: setCommunityMembership
+      description: Session and CSRF required. Idempotently join or leave as the current member only.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [joined]
+              properties:
+                joined: {type: boolean}
+      responses:
+        '204': {description: Membership saved}
+        '404': {description: Listing unavailable}
+  /community/catch-up:
+    get:
+      operationId: getNetworkCatchUp
+      description: Latest 50 member-visible posts from accepted connections within 30 days. Deleted, moderated and blocked content excluded. No-store.
+      responses:
+        '200':
+          description: Network activity
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/NetworkUpdate'}}
   /me/search-history:
     get:
       operationId: getMySearchHistory
@@ -1842,6 +1894,34 @@ components:
       in: cookie
       name: JSESSIONID
   schemas:
+    CommunityDraft:
+      type: object
+      required: [id, kind, title, description, startsAt, location]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [GROUP, EVENT, NEWSLETTER]}
+        title: {type: string, minLength: 1, maxLength: 160}
+        description: {type: string, maxLength: 3000}
+        startsAt: {type: [string, 'null'], format: date-time}
+        location: {type: string, maxLength: 240}
+    CommunityEntry:
+      allOf:
+        - {$ref: '#/components/schemas/CommunityDraft'}
+        - type: object
+          required: [joined, members, owned]
+          properties:
+            joined: {type: boolean}
+            members: {type: integer, format: int64}
+            owned: {type: boolean}
+    NetworkUpdate:
+      type: object
+      required: [id, memberId, name, text, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        memberId: {type: string, format: uuid}
+        name: {type: string}
+        text: {type: string}
+        createdAt: {type: string, format: date-time}
     SearchHistoryEntry:
       type: object
       required: [id, kind, query, location, searchedAt]
@@ -2429,8 +2509,9 @@ components:
         about: {type: string}
     Connection:
       type: object
-      required: [id, name, state, incoming, version]
+      required: [id, name, state, incoming, version, memberId]
       properties:
+        memberId: {type: string, format: uuid, description: Other member public identifier for starting an authorized conversation}
         id: {type: string, format: uuid}
         name: {type: string}
         state: {type: string, enum: [PENDING, ACCEPTED]}

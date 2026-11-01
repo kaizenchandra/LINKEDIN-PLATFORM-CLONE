@@ -62,7 +62,7 @@ test('following persists independently, masks private profiles and respects bloc
   await follower.goto('http://localhost:3100'+path);
   await follow.click();await expect(follower.getByRole('button',{name:'Unfollow',exact:true})).toBeVisible();
   follower.once('dialog',dialog=>dialog.accept());
-  await follower.getByRole('button',{name:'Block member',exact:true}).click();
+  await follower.getByText('Safety options',{exact:true}).click();await follower.getByRole('button',{name:'Block member',exact:true}).click();
   await expect(follower.getByRole('button',{name:'Unblock Followee Member',exact:true})).toBeVisible();
   await expect(list.getByText('Following: 0',{exact:true})).toBeVisible();
   follower.once('dialog',dialog=>dialog.accept());

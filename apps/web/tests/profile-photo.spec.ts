@@ -38,7 +38,7 @@ test('profile photo upload persists, shares under privacy rules and removes',asy
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
  expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
  await page.screenshot({path:testInfo.outputPath('profile-photo-mobile.png'),fullPage:true});
- await edit.click();await page.emulateMedia({colorScheme:'dark'});await page.evaluate(()=>document.documentElement.dataset.theme='system');
+ await edit.click();await page.emulateMedia({colorScheme:'dark'});await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
  expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
  await page.screenshot({path:testInfo.outputPath('photo-dialog-mobile-dark.png'),fullPage:true});
  await modal.getByRole('button',{name:'Remove photo',exact:true}).click();

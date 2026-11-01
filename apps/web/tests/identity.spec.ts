@@ -146,8 +146,6 @@ test('registration, email verification and profile persistence',async({page,requ
  await expect(languages.getByRole('button',{name:'Edit English',exact:true})).toHaveCount(0);
  await page.reload();await expect(languages.getByRole('button',{name:'Add language',exact:true})).toBeVisible();
  await expect(languages.getByRole('button',{name:'Edit English',exact:true})).toHaveCount(0);
- await page.getByRole('combobox',{name:'Appearance'}).selectOption('dark');
- await expect(page.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
  const secondContext=await browser.newContext();
  try{
  const second=await secondContext.newPage();await second.goto('http://localhost:3100');
@@ -155,19 +153,12 @@ test('registration, email verification and profile persistence',async({page,requ
  await second.getByRole('textbox',{name:'Email',exact:true}).fill(email);
  await second.locator('input[name="password"]').fill('Fictional-Test-Password-937!');
  await second.getByRole('button',{name:'Sign In',exact:true}).click();
- await expect(second.getByRole('combobox',{name:'Appearance'})).toHaveValue('dark');
- await second.getByRole('combobox',{name:'Appearance'}).selectOption('light');
- await expect(second.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
- await page.getByRole('combobox',{name:'Appearance'}).selectOption('light');
- await expect(page.getByText('Appearance changed in another session. Reload preferences before retrying.',{exact:true})).toBeVisible();
- await expect(page.getByRole('combobox',{name:'Appearance'})).toHaveValue('dark');
- await page.getByRole('button',{name:'Reload preferences',exact:true}).click();
- await expect(page.getByRole('combobox',{name:'Appearance'})).toHaveValue('light');
- await page.getByRole('combobox',{name:'Appearance'}).selectOption('dark');
- await expect(page.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
+ await expect(second.locator('html')).toHaveAttribute('data-theme','dark');
+ await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+ await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
  }finally{await secondContext.close();}
 
- await page.reload();await expect(page.getByRole('combobox',{name:'Appearance'})).toHaveValue('dark');
+ await page.reload();await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
  await page.locator('.account-menu summary').click();
  await page.getByRole('button',{name:'Sign out',exact:true}).click();
  await expect(page).toHaveURL(/28080.*logout/);

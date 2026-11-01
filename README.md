@@ -408,3 +408,5 @@ Verified: container builds and healthy startup; `./scripts/verify.sh` passed **8
 Google/Apple providers, phone login, remembered-session policy and legal consent remain unfinished. Four other images in the folder show jobs, events, followed companies and newsletters; their coverage and remaining scope are explicitly mapped in [authentication screenshot implementation](docs/authentication-screens.md). No external provider or AWS deployment was performed.
 
 The isolated `./scripts/test-local.sh` check also passed with the custom identity image, verifying fresh realm startup, service readiness and persistence after container recreation without resetting developer volumes.
+
+Network community features now include Catch up, member-created groups, event attendance and newsletter subscriptions. Open `/network` in the local app. See the [remaining backlog](docs/remaining-backlog.md#network-community-slice) for scope, verification and remaining publishing/community workflows.

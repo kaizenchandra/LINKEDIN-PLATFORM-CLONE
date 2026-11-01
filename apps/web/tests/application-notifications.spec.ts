@@ -11,7 +11,7 @@ test('application events produce private persistent job notifications and prefer
  try{
   const applicant=await context.newPage();await register(applicant,request,'JobNotificationApplicant');
   await page.goto('/notifications');await page.getByRole('button',{name:'Jobs',exact:true}).click();
-  await applicant.goto('/jobs/'+job);await applicant.getByLabel('Application statement',{exact:true}).fill('Fictional private application statement.');
+  await applicant.goto('/jobs/'+job);await applicant.getByRole('button',{name:'Easy Apply',exact:true}).click();await applicant.getByLabel('Application statement',{exact:true}).fill('Fictional private application statement.');
   await applicant.getByRole('checkbox',{name:'Share these application details with this company'}).check();await applicant.getByRole('button',{name:'Submit application',exact:true}).click();
   await expect(applicant.getByText('SUBMITTED',{exact:true})).toBeVisible();
   const incoming=page.getByRole('article',{name:'Notification from Fictional Notification Company'});
