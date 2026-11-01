@@ -1,0 +1,54 @@
+import {test,expect,Page} from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import {register} from './helpers/register';
+test.use({trace:'off'});
+async function write(page:Page,url:string,data:unknown){const csrf=await (await page.request.get('/api/v1/csrf')).json();const response=await page.request.put(url,{headers:{[csrf.header]:csrf.token},data});expect(response.ok()).toBeTruthy();return response}
+test('job questions reject stale submissions and preserve private answer snapshots',async({page,request,browser},testInfo)=>{
+ await register(page,request,'QuestionOwner');const company=crypto.randomUUID(),job=crypto.randomUUID();
+ await write(page,'/api/v1/organizations/'+company,{name:'Fictional Questions Company',industry:'Technology',location:'Remote',about:'Test company',version:0});
+ await write(page,'/api/v1/jobs/'+job,{organizationId:company,title:'Question engineer',location:'Remote',description:'Fictional role',workplace:'REMOTE',status:'OPEN',version:0});
+ await page.goto('/jobs/'+job);const editor=page.getByRole('region',{name:'Application question management'});
+ await editor.getByRole('button',{name:'Edit application questions',exact:true}).click();
+ await editor.getByRole('button',{name:'Add question',exact:true}).click();await editor.getByLabel('Question 1 prompt',{exact:true}).fill('Describe a technical project');
+ await editor.getByRole('button',{name:'Add question',exact:true}).click();await editor.getByLabel('Question 2 prompt',{exact:true}).fill('Anything else to share?');await editor.getByRole('checkbox',{name:'Required question 2',exact:true}).uncheck();
+ await editor.getByRole('button',{name:'Remove question 2',exact:true}).click();
+ await expect(editor.getByLabel('Question 2 prompt',{exact:true})).toHaveCount(0);
+ await editor.getByRole('button',{name:'Undo question removal',exact:true}).click();
+ await expect(editor.getByLabel('Question 2 prompt',{exact:true})).toHaveValue('Anything else to share?');
+ await expect(editor.getByRole('checkbox',{name:'Required question 2',exact:true})).not.toBeChecked();
+ await expect(editor.getByRole('button',{name:'Move question 1 up',exact:true})).toBeDisabled();
+ await expect(editor.getByRole('button',{name:'Move question 2 down',exact:true})).toBeDisabled();
+ await editor.getByRole('button',{name:'Move question 2 up',exact:true}).focus();await page.keyboard.press('Enter');
+ await expect(editor.getByLabel('Question 1 prompt',{exact:true})).toHaveValue('Anything else to share?');
+ expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:testInfo.outputPath('question-editor-desktop.png'),fullPage:true});
+ await editor.getByRole('button',{name:'Save application questions',exact:true}).click();await expect(editor.getByRole('status')).toContainText('Application questions saved.');
+ await page.reload();await expect(editor).toContainText('Describe a technical project');await expect(editor.getByRole('listitem').first()).toContainText('Anything else to share?');
+ const context=await browser.newContext();
+ try{
+  const candidate=await context.newPage();await register(candidate,request,'QuestionApplicant');await candidate.goto('/jobs/'+job);
+  const form=candidate.getByRole('region',{name:'Job application',exact:true});
+  await form.getByLabel('Application statement',{exact:true}).fill('My private statement.');
+  await form.getByRole('checkbox',{name:'Share these application details with this company'}).check();
+  await expect(form.getByRole('button',{name:'Submit application',exact:true})).toBeDisabled();
+  await form.getByLabel('Describe a technical project (Required)',{exact:true}).fill('My first private answer.');
+  await editor.getByRole('button',{name:'Edit application questions',exact:true}).click();await editor.getByLabel('Question 2 prompt',{exact:true}).fill('Describe a reliability project');
+  await editor.getByRole('button',{name:'Save application questions',exact:true}).click();await expect(editor.getByRole('status')).toContainText('Application questions saved.');
+  await form.getByRole('button',{name:'Submit application',exact:true}).click();await expect(form.getByRole('status')).toContainText('reload application questions');
+  await expect(form.getByLabel('Describe a technical project (Required)',{exact:true})).toHaveValue('My first private answer.');
+  candidate.once('dialog',dialog=>dialog.accept());await form.getByRole('button',{name:'Reload application questions',exact:true}).click();
+  const answer=form.getByLabel('Describe a reliability project (Required)',{exact:true});await expect(answer).toHaveValue('');
+  await expect(form.getByLabel('Application statement',{exact:true})).toHaveValue('My private statement.');
+  await answer.fill('Built a fictional recovery process.');
+  await form.getByRole('checkbox',{name:'Share these application details with this company'}).check();
+  await candidate.setViewportSize({width:390,height:844});await candidate.emulateMedia({colorScheme:'dark'});
+  expect(await candidate.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  expect((await new AxeBuilder({page:candidate}).analyze()).violations).toEqual([]);await candidate.evaluate(()=>window.scrollTo(0,0));await candidate.screenshot({path:testInfo.outputPath('application-questions-mobile-dark.png'),fullPage:true});
+  await form.getByRole('button',{name:'Submit application',exact:true}).click();await expect(form.getByText('SUBMITTED',{exact:true})).toBeVisible();
+  await form.getByRole('link',{name:'Track my application',exact:true}).click();await candidate.getByText('View application answers',{exact:true}).click();
+  await expect(candidate.getByText('Built a fictional recovery process.',{exact:true})).toBeVisible();await expect(candidate.getByText('Not answered',{exact:true})).toBeVisible();
+  await editor.getByRole('button',{name:'Edit application questions',exact:true}).click();await editor.getByRole('button',{name:'Move question 2 up',exact:true}).click();await editor.getByLabel('Question 1 prompt',{exact:true}).fill('New question for future applicants');
+  await editor.getByRole('button',{name:'Save application questions',exact:true}).click();await expect(editor.getByRole('status')).toContainText('Application questions saved.');
+  await candidate.reload();await candidate.getByText('View application answers',{exact:true}).click();await expect(candidate.getByText('Describe a reliability project (Required)',{exact:true})).toBeVisible();await expect(candidate.getByText('New question for future applicants')).toHaveCount(0);await expect(candidate.getByRole('term').first()).toHaveText('Anything else to share? (Optional)');
+  await page.goto('/applications?view=RECEIVED&job='+job);await page.getByText('View application answers',{exact:true}).click();await expect(page.getByText('Built a fictional recovery process.',{exact:true})).toBeVisible();
+ }finally{await context.close()}
+});

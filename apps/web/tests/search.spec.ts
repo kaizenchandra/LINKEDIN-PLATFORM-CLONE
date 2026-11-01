@@ -1,0 +1,57 @@
+import {test,expect} from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import {register} from './helpers/register';
+test.use({trace:'off'});
+test('people discovery is opt-in and connects search to follow and invitations',async({page,request,browser},testInfo)=>{
+ const label='Discover'+Date.now(),name=label+' Member';
+ await register(page,request,label);
+ const discovery=page.getByRole('region',{name:'People search visibility',exact:true});
+ const profileVisibility=page.getByRole('region',{name:'Profile visibility',exact:true});
+ await expect(discovery.getByRole('checkbox')).not.toBeChecked();
+ await profileVisibility.getByRole('checkbox',{name:'Visible to signed-in members',exact:true}).click();await expect(profileVisibility.getByRole('checkbox',{name:'Visible to signed-in members',exact:true})).toBeChecked();
+ await page.getByRole('button',{name:'Edit introduction',exact:true}).click();
+ await page.getByRole('textbox',{name:'headline',exact:true}).fill('Platform engineer');
+ await page.getByRole('textbox',{name:'location',exact:true}).fill('Bengaluru');
+ await page.getByRole('button',{name:'Save profile',exact:true}).click();await expect(page.getByRole('dialog')).not.toBeVisible();
+ const context=await browser.newContext();
+ try{
+  const visitor=await context.newPage();await register(visitor,request,'SearchVisitor');
+  await visitor.getByRole('textbox',{name:'Search people',exact:true}).fill(label);
+  await visitor.getByRole('textbox',{name:'Search people',exact:true}).press('Enter');
+  const status=visitor.getByRole('status').first();
+  await expect(status).toHaveText('No matching people. Try another name, headline or location.');
+  await discovery.getByRole('checkbox').click();await expect(discovery.getByRole('checkbox')).toBeChecked();await expect(discovery.getByRole('checkbox')).toBeEnabled();
+  await page.reload();await expect(discovery.getByRole('checkbox')).toBeChecked();
+  await visitor.getByRole('button',{name:'Refresh results',exact:true}).click();
+  const result=visitor.getByRole('article',{name:'Search result for '+name,exact:true});
+  await expect(result).toBeVisible();await expect(result.getByText('Platform engineer',{exact:true})).toBeVisible();
+  await visitor.getByRole('textbox',{name:'Location (optional)',exact:true}).fill('London');
+  await visitor.getByRole('button',{name:'Search members',exact:true}).click();await expect(result).toHaveCount(0);await expect(status).toHaveText('No matching people. Try another name, headline or location.');
+  await visitor.getByRole('textbox',{name:'Location (optional)',exact:true}).fill('bengal');
+  await visitor.getByRole('button',{name:'Search members',exact:true}).click();await expect(result).toBeVisible();
+  expect((await new AxeBuilder({page:visitor}).analyze()).violations).toEqual([]);
+  await visitor.screenshot({path:testInfo.outputPath('search-desktop.png'),fullPage:true});
+  await visitor.setViewportSize({width:390,height:844});
+  expect(await visitor.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
+  await visitor.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('dark');
+  await expect(visitor.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
+  expect((await new AxeBuilder({page:visitor}).analyze()).violations).toEqual([]);
+  await visitor.screenshot({path:testInfo.outputPath('search-mobile-dark.png'),fullPage:true});
+  await visitor.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('light');
+  await expect(visitor.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
+  await visitor.setViewportSize({width:1280,height:720});
+  await result.getByRole('link',{name:'View profile',exact:true}).click();
+  await visitor.getByRole('button',{name:'Follow',exact:true}).click();await expect(visitor.getByRole('button',{name:'Unfollow',exact:true})).toBeVisible();
+  await visitor.getByRole('button',{name:'Connect',exact:true}).click();await expect(visitor.getByText('Connection request sent.',{exact:true})).toBeVisible();
+  const memberUrl=visitor.url();
+  await discovery.getByRole('checkbox').click();await expect(discovery.getByRole('checkbox')).not.toBeChecked();await expect(discovery.getByRole('checkbox')).toBeEnabled();
+  await visitor.goto('/search?q='+label);await expect(status).toHaveText('No matching people. Try another name, headline or location.');
+  // Opting out of discovery does not revoke a deliberately shared profile link.
+  await visitor.goto(memberUrl);await expect(visitor.getByRole('heading',{name,exact:true})).toBeVisible();
+  await discovery.getByRole('checkbox').click();await expect(discovery.getByRole('checkbox')).toBeChecked();await expect(discovery.getByRole('checkbox')).toBeEnabled();
+  visitor.once('dialog',dialog=>dialog.accept());
+  await visitor.getByRole('button',{name:'Block member',exact:true}).click();
+  await expect(visitor.getByRole('button',{name:'Unblock '+name,exact:true})).toBeVisible();
+  await visitor.goto('/search?q='+label);await expect(status).toHaveText('No matching people. Try another name, headline or location.');
+ }finally{await context.close()}
+});

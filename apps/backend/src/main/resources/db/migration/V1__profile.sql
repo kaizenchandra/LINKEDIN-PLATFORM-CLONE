@@ -1,0 +1,1 @@
+create table profile(subject varchar(255) primary key, name varchar(120) not null, headline varchar(220) not null default '', location varchar(120) not null default '', about varchar(2600) not null default '', version bigint not null default 0);

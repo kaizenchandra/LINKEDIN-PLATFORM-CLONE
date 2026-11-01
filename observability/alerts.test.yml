@@ -1,0 +1,35 @@
+rule_files:
+  - /etc/prometheus/alerts.yml
+evaluation_interval: 10s
+tests:
+  - interval: 10s
+    input_series:
+      - series: 'up{job="meridian-backend",instance="backend:9091"}'
+        values: '0x7 1x10'
+    alert_rule_test:
+      - eval_time: 1m10s
+        alertname: BackendScrapeUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: meridian-backend
+              instance: backend:9091
+              severity: critical
+            exp_annotations:
+              summary: Backend metrics scrape has failed for one minute
+      - eval_time: 2m
+        alertname: BackendScrapeUnavailable
+        exp_alerts: []
+  - interval: 10s
+    input_series:
+      - series: 'http_server_requests_seconds_count{job="meridian-backend",status="200"}'
+        values: '0+9x80'
+      - series: 'http_server_requests_seconds_count{job="meridian-backend",status="500"}'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: BackendHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Backend error rate is above five percent

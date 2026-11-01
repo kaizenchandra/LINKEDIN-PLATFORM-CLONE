@@ -1,0 +1,36 @@
+import {test,expect} from '@playwright/test';
+import {register} from './helpers/register';
+test.use({trace:'off',screenshot:'off',video:'off'});
+test('native passkey enrollment, passwordless login and revocation',async({page,request,context})=>{
+ test.setTimeout(90000);
+ const cdp=await context.newCDPSession(page);
+ await cdp.send('WebAuthn.enable');
+ const {authenticatorId}=await cdp.send('WebAuthn.addVirtualAuthenticator',{options:{protocol:'ctap2',ctap2Version:'ctap2_1',transport:'internal',hasResidentKey:true,hasUserVerification:true,isUserVerified:true,automaticPresenceSimulation:true}});
+ await register(page,request,'Passkey');
+ await page.goto('/settings');
+ await page.getByRole('link',{name:'Passkeys and recovery codes'}).click();
+ await page.getByRole('button',{name:'Set up Passkey',exact:true}).click();
+ page.on('dialog',dialog=>dialog.accept('Test passkey'));
+ await page.getByRole('button',{name:'Register',exact:true}).click();
+ await expect(page.getByText('Test passkey',{exact:true})).toBeVisible();
+ const credentials=await cdp.send('WebAuthn.getCredentials',{authenticatorId});
+ expect(credentials.credentials).toHaveLength(1);
+ expect(credentials.credentials[0].rpId).toBe('localhost');
+ await page.goto('/');await page.locator('.account-menu summary').click();
+ await page.getByRole('button',{name:'Sign out',exact:true}).click();
+ await expect(page).toHaveURL(/28080.*logout/);
+ await page.goto('/');await page.getByRole('link',{name:'Sign in / Register',exact:true}).click();
+ // Virtual authenticator accepts the native conditional passkey prompt; no password is entered.
+ await expect(page.getByRole('heading',{name:'Passkey Member',exact:true})).toBeVisible();
+ expect((await page.request.get('/api/v1/me')).ok()).toBeTruthy();
+ await page.goto('/settings');await page.getByRole('link',{name:'Passkeys and recovery codes'}).click();
+ await page.getByRole('listitem').filter({hasText:'Test passkey'}).getByRole('button',{name:'Delete',exact:true}).click();
+ await page.getByRole('button',{name:'Confirm deletion',exact:true}).click();
+ await expect(page.getByText('Test passkey',{exact:true})).toHaveCount(0);
+ await page.goto('/');await page.locator('.account-menu summary').click();
+ await page.getByRole('button',{name:'Sign out',exact:true}).click();await expect(page).toHaveURL(/28080.*logout/);
+ await page.goto('/');await page.getByRole('link',{name:'Sign in / Register',exact:true}).click();
+ await expect(page.getByRole('textbox',{name:'Email',exact:true})).toBeVisible();
+ expect((await page.request.get('http://localhost:3100/api/v1/me')).status()).toBe(401);
+ await cdp.send('WebAuthn.removeVirtualAuthenticator',{authenticatorId});
+});

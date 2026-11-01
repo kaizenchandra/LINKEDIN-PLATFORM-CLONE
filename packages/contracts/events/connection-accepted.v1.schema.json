@@ -1,0 +1,14 @@
+{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "$id":"https://meridian.local/events/connection-accepted.v1",
+ "title":"ConnectionAccepted v1",
+ "type":"object",
+ "additionalProperties":false,
+ "required":["eventId","schemaVersion","type","connectionId"],
+ "properties":{
+  "eventId":{"type":"string","format":"uuid"},
+  "schemaVersion":{"const":1},
+  "type":{"const":"ConnectionAccepted"},
+  "connectionId":{"type":"string","format":"uuid"}
+ }
+}

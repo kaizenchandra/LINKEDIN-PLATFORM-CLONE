@@ -1,0 +1,15 @@
+{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "$id":"https://meridian.local/events/application-changed.v1",
+ "title":"ApplicationChanged v1",
+ "type":"object",
+ "additionalProperties":false,
+ "required":["eventId","schemaVersion","type","applicationId","applicationVersion"],
+ "properties":{
+  "eventId":{"type":"string","format":"uuid"},
+  "schemaVersion":{"const":1},
+  "type":{"const":"ApplicationChanged"},
+  "applicationId":{"type":"string","format":"uuid"},
+  "applicationVersion":{"type":"integer","minimum":1}
+ }
+}

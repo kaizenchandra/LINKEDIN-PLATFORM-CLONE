@@ -1,0 +1,35 @@
+{
+  "realm": "meridian",
+  "enabled": true,
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": true,
+  "verifyEmail": true,
+  "resetPasswordAllowed": true,
+  "bruteForceProtected": true,
+  "smtpServer": {
+    "host": "mailpit",
+    "port": "1025",
+    "from": "accounts@meridian.local"
+  },
+  "clients": [
+    {
+      "clientId": "meridian",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "local-only-replace-before-any-deployment",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8081/login/oauth2/code/keycloak"
+      ],
+      "webOrigins": [
+        "http://localhost:3100"
+      ],
+      "attributes": {
+        "backchannel.logout.url": "${MERIDIAN_LOCAL_BACKCHANNEL_URL}",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "false"
+      }
+    }
+  ]
+}

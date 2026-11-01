@@ -1,0 +1,50 @@
+name: Integrated verification
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  identity-profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: apps/backend/pom.xml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.17.0'
+      - name: Validate infrastructure and offline AWS plan
+        run: |
+          terraform fmt -check -recursive infrastructure/terraform
+          terraform -chdir=infrastructure/terraform/modules/media init -input=false
+          terraform -chdir=infrastructure/terraform/modules/media test
+          terraform -chdir=infrastructure/terraform/aws init -input=false
+          terraform -chdir=infrastructure/terraform/aws validate
+          terraform -chdir=infrastructure/terraform/aws test
+      - run: npm --prefix apps/web ci
+      - run: cd apps/web && npx playwright install --with-deps chromium
+      - name: Verify isolated local infrastructure
+        run: ./scripts/test-local.sh
+      - name: Build and start containerized application
+        run: ./scripts/localstack-up.sh --profile observability
+      - name: Verify metrics and alert rules
+        run: |
+          node scripts/check-monitoring.mjs
+          docker compose --env-file .env -f infrastructure/local/compose.yml --profile app --profile observability exec -T prometheus promtool check config /etc/prometheus/prometheus.yml
+          docker compose --env-file .env -f infrastructure/local/compose.yml --profile app --profile observability exec -T prometheus promtool test rules /etc/prometheus/alerts.test.yml
+      - run: ./scripts/verify.sh
+      - name: Verify local media recovery after emulator restart
+        run: ./scripts/test-localstack.sh
+      - run: npm --prefix apps/web run build
+      - name: Stop local services
+        if: always()
+        run: docker compose --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability down

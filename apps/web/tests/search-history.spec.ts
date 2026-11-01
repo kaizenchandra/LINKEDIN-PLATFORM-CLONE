@@ -1,0 +1,40 @@
+import {test,expect} from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import {register} from './helpers/register';
+test.use({trace:'off'});
+test('search history is opt-in, private, reusable and removable across account pages',async({page,request,browser},testInfo)=>{
+ await register(page,request,'History');await page.goto('/search');
+ const history=page.getByRole('region',{name:'Search history',exact:true});
+ await expect(history.getByRole('checkbox',{name:'Save search history'})).not.toBeChecked();
+ await page.getByRole('textbox',{name:'Name or headline',exact:true}).fill('Private fictional term');
+ await page.getByRole('button',{name:'Search members',exact:true}).click();
+ await expect(page.getByRole('status').first()).toContainText('No matching people');
+ expect((await (await page.request.get('/api/v1/me/search-history')).json()).items).toHaveLength(0);
+ await history.getByRole('checkbox',{name:'Save search history'}).click();await expect(history.getByRole('status')).toHaveText('Search history enabled.');
+ await page.getByRole('button',{name:'Search members',exact:true}).click();
+ await expect(history.getByRole('button',{name:'Search again: Private fictional term (people)',exact:true})).toBeVisible();
+ await page.reload();await expect(history.getByRole('listitem')).toHaveCount(1);
+ await page.getByRole('textbox',{name:'Name or headline',exact:true}).fill('Unsaved input');
+ await history.getByRole('button',{name:'Search again: Private fictional term (people)',exact:true}).click();
+ await expect(page.getByRole('textbox',{name:'Name or headline',exact:true})).toHaveValue('Private fictional term');
+ const data=await (await page.request.get('/api/v1/me/search-history')).json();
+ const otherContext=await browser.newContext();try{
+  const other=await otherContext.newPage();await register(other,request,'HistoryOther');
+  expect((await (await other.request.get('/api/v1/me/search-history')).json()).items).toHaveLength(0);
+  const csrf=await (await other.request.get('/api/v1/csrf')).json();expect((await other.request.delete('/api/v1/me/search-history/entries/'+data.items[0].id+'?version=0',{headers:{[csrf.header]:csrf.token}})).status()).toBe(200);
+  expect((await (await page.request.get('/api/v1/me/search-history')).json()).items).toHaveLength(1);
+ }finally{await otherContext.close()}
+ await page.goto('/settings#privacy');await expect(history.getByRole('link',{name:'Private fictional term',exact:true})).toBeVisible();
+ await page.setViewportSize({width:390,height:844});await page.emulateMedia({colorScheme:'dark'});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.screenshot({path:testInfo.outputPath('history-entry-mobile-dark.png'),fullPage:true});
+ await history.getByRole('button',{name:'Remove search: Private fictional term (people)',exact:true}).click();await expect(history.getByRole('listitem')).toHaveCount(0);
+ const token=await (await page.request.get('/api/v1/csrf')).json();
+ expect((await page.request.put('/api/v1/me/search-history/entries',{headers:{[token.header]:token.token},data:{query:'Private fictional term',location:'',kind:'people',version:data.version}})).status()).toBe(409);
+ await page.goto('/search');await expect(history.getByRole('checkbox',{name:'Save search history'})).toBeChecked();
+ await page.getByRole('textbox',{name:'Name or headline',exact:true}).fill('Another private query');await page.getByRole('button',{name:'Search members',exact:true}).click();await expect(history.getByRole('listitem')).toHaveCount(1);
+ page.once('dialog',dialog=>dialog.accept());await history.getByRole('button',{name:'Clear search history',exact:true}).click();await expect(history.getByRole('listitem')).toHaveCount(0);
+ await page.getByRole('button',{name:'Search members',exact:true}).click();await expect(history.getByRole('listitem')).toHaveCount(1);
+ page.once('dialog',dialog=>dialog.accept());await history.getByRole('checkbox',{name:'Save search history'}).click();await expect(history.getByRole('status')).toHaveText('Search history disabled and cleared.');await page.reload();await expect(history.getByRole('checkbox',{name:'Save search history'})).toBeEnabled();await expect(history.getByRole('checkbox',{name:'Save search history'})).not.toBeChecked();await expect(history.getByRole('listitem')).toHaveCount(0);
+ await page.setViewportSize({width:390,height:844});await page.emulateMedia({colorScheme:'dark'});
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
+ await page.screenshot({path:testInfo.outputPath('search-history-mobile-dark.png'),fullPage:true});
+});

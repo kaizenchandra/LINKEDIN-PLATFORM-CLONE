@@ -1,0 +1,52 @@
+import {test,expect} from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import {register} from './helpers/register';
+test.use({trace:'off'});
+test('company owner publishes and closes jobs while members search and save',async({page,request,browser},testInfo)=>{
+ await register(page,request,'JobOwner');
+ // Company fixture is created through the real authorized API; publishing uses the UI.
+ const csrf=await (await page.request.get('/api/v1/csrf')).json(),companyId=crypto.randomUUID();
+ expect((await page.request.put('/api/v1/organizations/'+companyId,{headers:{[csrf.header]:csrf.token},data:{name:'Fictional Career Studio',industry:'Technology',location:'Bengaluru',about:'Fictional company',version:0}})).ok()).toBeTruthy();
+ await page.goto('/companies/'+companyId);await page.getByRole('link',{name:'Post a job',exact:true}).click();
+ const title='Platform Engineer '+Date.now();
+ await page.getByRole('textbox',{name:'Job title',exact:true}).fill(title);
+ await page.getByRole('textbox',{name:'Job description',exact:true}).fill('Build reliable systems with our fictional engineering team.');
+ await page.getByRole('combobox',{name:'Work arrangement',exact:true}).selectOption('REMOTE');
+ await page.getByRole('button',{name:'Publish job',exact:true}).click();
+ await expect(page).toHaveURL(/\/jobs\/[0-9a-f-]{36}$/);const url=page.url(),jobId=url.split('/').pop();
+ await page.reload();await expect(page.getByRole('heading',{name:title,exact:true})).toBeVisible();
+ await expect(page.getByRole('link',{name:'Review applications',exact:true})).toBeVisible();
+ const context=await browser.newContext();try{
+  const member=await context.newPage();await register(member,request,'JobSeeker');
+  await member.getByRole('link',{name:'Jobs',exact:true}).click();
+  await member.getByLabel('Job title or company').fill(title);await member.getByLabel('Job location').fill('bengaluru');await member.getByRole('combobox',{name:'Work arrangement',exact:true}).selectOption('REMOTE');
+  await member.getByRole('button',{name:'Search jobs',exact:true}).click();await expect(member.getByRole('button',{name:'Search jobs',exact:true})).toBeEnabled();
+  await expect(member.getByRole('article')).toHaveCount(1);
+  await expect(member.getByRole('link',{name:'Jobs',exact:true})).toHaveAttribute('aria-current','page');
+  expect((await new AxeBuilder({page:member}).analyze()).violations).toEqual([]);await member.screenshot({path:testInfo.outputPath('jobs-desktop.png'),fullPage:true});
+  await member.getByRole('button',{name:'Dismiss job '+title,exact:true}).click();
+  await expect(member.getByRole('link',{name:title,exact:true})).toHaveCount(0);
+  await member.reload();await member.getByRole('button',{name:'Dismissed jobs',exact:true}).click();
+  await expect(member.getByRole('link',{name:title,exact:true})).toBeVisible();
+  await member.getByRole('button',{name:'Restore job '+title,exact:true}).click();await expect(member.getByRole('link',{name:title,exact:true})).toHaveCount(0);
+  await member.getByRole('button',{name:'Discover jobs',exact:true}).click();
+  await member.getByLabel('Job title or company').fill(title);await member.getByRole('button',{name:'Search jobs',exact:true}).click();
+  await expect(member.getByRole('article')).toHaveCount(1);
+  await member.getByRole('link',{name:'View job',exact:true}).click();
+  await expect(member.getByRole('button',{name:'Edit job',exact:true})).toHaveCount(0);
+  const current=await (await member.request.get('/api/v1/jobs/'+jobId)).json(),token=await (await member.request.get('/api/v1/csrf')).json();
+  expect((await member.request.put('/api/v1/jobs/'+jobId,{headers:{[token.header]:token.token},data:{...current,title:'Unauthorized edit'}})).status()).toBe(403);
+  await member.getByRole('button',{name:'Save job',exact:true}).click();await expect(member.locator('main > .profile-column > .profile-card').first().getByRole('status')).toHaveText('Job saved to your list.');
+  await member.reload();await expect(member.getByRole('button',{name:'Unsave job',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Edit job',exact:true}).click();await page.getByRole('combobox',{name:'Job status',exact:true}).selectOption('CLOSED');await page.getByRole('button',{name:'Save job changes',exact:true}).click();
+  await expect(page.getByText('Closed role',{exact:true})).toBeVisible();
+  await member.goto('/jobs');await member.getByLabel('Job title or company').fill(title);await member.getByRole('button',{name:'Search jobs',exact:true}).click();await expect(member.locator('main > .profile-column > .profile-card').first().getByRole('status')).toHaveText('No jobs match this view.');
+  await member.getByRole('button',{name:'Saved jobs',exact:true}).click();await expect(member.getByRole('link',{name:title,exact:true})).toBeVisible();await member.getByRole('link',{name:'View job',exact:true}).click();await expect(member.getByText('Closed role',{exact:true})).toBeVisible();
+  await member.setViewportSize({width:390,height:844});await member.getByRole('combobox',{name:'Appearance',exact:true}).selectOption('dark');await expect(member.getByText('Appearance saved to your account.',{exact:true})).toBeVisible();
+  expect(await member.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();expect((await new AxeBuilder({page:member}).analyze()).violations).toEqual([]);await member.screenshot({path:testInfo.outputPath('job-mobile-dark.png'),fullPage:true});
+  await member.getByRole('button',{name:'Unsave job',exact:true}).click();await expect(member.getByRole('button',{name:'Save job',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Edit job',exact:true}).click();await page.getByRole('combobox',{name:'Job status',exact:true}).selectOption('OPEN');await page.getByRole('button',{name:'Save job changes',exact:true}).click();await expect(page.getByText('Open role',{exact:true})).toBeVisible();
+  await member.goto('/jobs?organization='+companyId);await expect(member.getByRole('link',{name:title,exact:true})).toBeVisible();
+ }finally{await context.close()}
+ await page.goto('/jobs');await page.getByRole('button',{name:'Manage job posts',exact:true}).click();await expect(page.getByRole('link',{name:title,exact:true})).toBeVisible();
+});

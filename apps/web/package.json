@@ -1,0 +1,28 @@
+{
+  "name": "meridian-web",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3100 --hostname 127.0.0.1",
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "contracts:generate": "openapi-typescript ../../packages/contracts/profile.openapi.yaml -o app/api-schema.d.ts"
+  },
+  "dependencies": {
+    "next": "^16.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "openapi-typescript": "^7.13.0",
+    "otpauth": "^9.5.2",
+    "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
+  }
+}

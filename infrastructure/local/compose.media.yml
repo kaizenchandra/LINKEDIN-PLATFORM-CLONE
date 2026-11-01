@@ -1,0 +1,28 @@
+services:
+  keycloak:
+    environment:
+      MERIDIAN_LOCAL_BACKCHANNEL_URL: http://backend:8081/logout/connect/back-channel/keycloak
+  localstack:
+    image: localstack/localstack:4.10.0
+    environment:
+      SERVICES: s3
+      DEBUG: "0"
+    ports: ["127.0.0.1:4566:4566"]
+    healthcheck:
+      test: ["CMD", "awslocal", "s3api", "list-buckets"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  backend:
+    environment:
+      MERIDIAN_MEDIA_S3_ENABLED: "true"
+      MERIDIAN_MEDIA_S3_RETAIN_DB_COPY: "true"
+      MERIDIAN_MEDIA_S3_ENDPOINT: http://localstack:4566
+      MERIDIAN_MEDIA_S3_BUCKET: meridian-local-media
+      MERIDIAN_MEDIA_S3_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_EC2_METADATA_DISABLED: "true"
+    depends_on:
+      localstack:
+        condition: service_healthy

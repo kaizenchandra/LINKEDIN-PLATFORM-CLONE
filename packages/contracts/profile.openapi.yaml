@@ -1,0 +1,2453 @@
+openapi: 3.1.0
+info:
+  title: Meridian Self Profile API
+  version: 0.1.0
+servers:
+  - url: /api/v1
+security:
+  - session: []
+paths:
+  /me/search-history:
+    get:
+      operationId: getMySearchHistory
+      description: Owner-only, no-store. Disabled by default. At most 20 distinct searches used within 30 days, newest first. Query text is private and never included in events or telemetry.
+      responses:
+        '200':
+          description: Current consent revision and retained history
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SearchHistoryState'}
+        '401': {description: Authentication required}
+    delete:
+      operationId: clearMySearchHistory
+      description: CSRF and current version required. Deletes all owned entries and advances the consent revision, preventing an earlier in-flight record from recreating cleared history. Existing downloaded/exported archives are separate copies.
+      parameters:
+        - {in: query, name: version, required: true, schema: {type: integer, format: int64, minimum: 0}}
+      responses:
+        '200':
+          description: Updated history state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SearchHistoryState'}
+        '409': {description: History changed; refresh before retrying}
+  /me/search-history/preference:
+    put:
+      operationId: setSearchHistoryPreference
+      description: Owner/CSRF required. Compare current revision; every change advances it. Disabling atomically removes all stored searches. Re-enabling does not restore deleted data. Search works regardless of this preference.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled, version]
+              properties:
+                enabled: {type: boolean}
+                version: {type: integer, format: int64, minimum: 0}
+      responses:
+        '200':
+          description: Current preference and history
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SearchHistoryState'}
+        '409': {description: Stale revision or profile missing}
+  /me/search-history/entries:
+    put:
+      operationId: rememberMySearch
+      description: Owner/CSRF required, opt-in and current consent revision enforced. Explicit submitted searches only; never called for keystrokes, refresh, pagination or browser-history restoration. Normalized duplicate criteria update one entry and its recency; retry cannot create duplicates. Keeps newest 20. Companies/posts discard location. Bounded 30-day logical retention; expired rows removed on the owner's next mutation and by a bounded background cleanup worker.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SearchHistoryWrite'}
+      responses:
+        '200':
+          description: Updated private history
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SearchHistoryState'}
+        '400': {description: Invalid criteria}
+        '409': {description: Disabled, stale revision or profile missing}
+  /me/search-history/entries/{id}:
+    delete:
+      operationId: removeMySearchHistoryEntry
+      description: Owner/CSRF/current revision required. Removes only an owned entry and advances revision to reject stale record retries. Foreign/missing IDs never affect other members and have the same successful response.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: version, required: true, schema: {type: integer, format: int64, minimum: 0}}
+      responses:
+        '200':
+          description: Updated history
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SearchHistoryState'}
+        '409': {description: Stale revision}
+  /reports:
+    get:
+      operationId: listMyReports
+      description: Owner-only report status list, 20 per page, ascending UUID cursor. Excludes reviewer identity, internal reasons and post contents. No-store.
+      parameters:
+        - {in: query, name: after, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Private submitted reports
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReportPage'}
+  /reports/{id}:
+    put:
+      operationId: submitContentReport
+      description: Authenticated CSRF-protected report of a currently readable non-owned post. At most one report per reporter/post and 20 new reports per rolling day. Same UUID and normalized payload retries return the existing report. Private/deleted/blocked posts unavailable. No-store.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReportWrite'}
+      responses:
+        '200':
+          description: Persisted report
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ContentReport'}
+        '400': {description: Invalid category or details}
+        '403': {description: CSRF required}
+        '404': {description: Post unavailable}
+        '409': {description: Duplicate post report, ID conflict or own post}
+        '429': {description: Daily reporting limit reached}
+  /moderation/access:
+    get:
+      operationId: getModerationAccess
+      description: Current database-backed operator entitlement; does not grant access. No-store.
+      responses:
+        '200':
+          description: Current entitlement
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [allowed]
+                properties:
+                  allowed: {type: boolean}
+  /moderation/reports:
+    get:
+      operationId: listModerationQueue
+      description: Explicit operator grant required on every request. Open reports only; includes submitted details and retained current post text for review, excludes reporter identity. Cursor by UUID, 20 entries. No-store.
+      parameters:
+        - {in: query, name: after, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Restricted review queue
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModerationPage'}
+        '403': {description: Operator access required}
+  /moderation/reports/{id}:
+    put:
+      operationId: decideContentReport
+      description: Explicit operator grant, CSRF, report version and reviewed postVersion required. Post edits invalidate an undecided review; refresh before deciding. Operators cannot review their own posts or reports. Atomic decision, audit and optional post removal. Exact decision/version/reason retry by same reviewer returns current report. Takedown applies to subsequent post/feed/search/comment/activity reads. Dismissal never restores removed content. No-store.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, reason, version, postVersion]
+              properties:
+                postVersion: {type: integer, format: int64, minimum: 1}
+                decision: {type: string, enum: [REMOVED, DISMISSED]}
+                reason: {type: string, minLength: 1, maxLength: 1000}
+                version: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: Audited decision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ContentReport'}
+        '403': {description: No operator grant, conflict of interest or missing CSRF}
+        '404': {description: Report unavailable}
+        '409': {description: Report already decided or stale version}
+
+  /activity/{id}:
+    get:
+      operationId: getMemberPostActivity
+      description: Authenticated authored-post activity using current post audience, deletion and bilateral-block rules. Profile summary visibility is independent from deliberately member-visible posts. Own private posts are visible only to their author. No-store, newest sequence first; 20 per page. Unknown or blocked authors yield an empty page.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: before, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+      responses:
+        '200':
+          description: Visible authored posts
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FeedPage'}
+        '400': {description: Invalid ID or cursor}
+        '401': {description: Authentication required}
+
+  /me/post-drafts:
+    get:
+      operationId: listMyPostDrafts
+      description: Owner-only unpublished drafts, ascending ID, 20 per page. No-store. Drafts are excluded from all feeds and searches.
+      parameters:
+        - {in: query, name: after, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Private draft page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PostDraftPage'}
+        '401': {description: Authentication required}
+  /me/post-drafts/{id}:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getMyPostDraft
+      responses:
+        '200':
+          description: Owned draft or publication marker, no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PostDraft'}
+        '404': {description: Draft unavailable}
+    put:
+      operationId: saveMyPostDraft
+      description: CSRF-protected owner-only save. Version zero creates; exact initial payload retry returns existing version one. Later writes compare versions. Maximum 100 unpublished drafts per owner. Published drafts are immutable. No-store; read-your-writes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PostDraftWrite'}
+      responses:
+        '200':
+          description: Saved draft
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PostDraft'}
+        '400': {description: Invalid fields}
+        '403': {description: CSRF required}
+        '409': {description: Stale version, ID conflict, published draft or capacity reached}
+    delete:
+      operationId: deleteMyPostDraft
+      description: Owner-only version-checked hard deletion of an unpublished draft. Requires CSRF. Duplicate or stale deletion conflicts. Does not delete published posts.
+      parameters:
+        - {in: query, name: version, required: true, schema: {type: integer, format: int64, minimum: 1}}
+      responses:
+        '204': {description: Draft deleted}
+        '409': {description: Draft changed or unavailable}
+  /me/post-drafts/{id}/publish:
+    post:
+      operationId: publishMyPostDraft
+      description: Atomically publishes the saved nonblank draft and marks it published. Owner-only, CSRF and expected version required. Exact publication-version replay returns the existing post without duplicating it. Later deletion never resurrects the post. Draft ID becomes post ID. No-store.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: Persisted published post
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Post'}
+        '404': {description: Draft unavailable or published post deleted}
+        '409': {description: Stale version, blank draft or conflicting post ID}
+
+  /me/network-privacy:
+    get:
+      operationId: getNetworkPrivacy
+      description: Owner-only connection sharing consent. Defaults false. No-store.
+      responses:
+        '200':
+          description: Current preference and concurrency version
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NetworkPrivacy'}
+        '401': {description: Authentication required}
+    put:
+      operationId: setNetworkPrivacy
+      description: Owner-only CSRF-protected compare-and-swap. Consent permits mutual-edge disclosure only while profile sharing and discovery are also enabled. Read-your-writes; stale versions return 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NetworkPrivacy'}
+      responses:
+        '200':
+          description: Persisted preference
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NetworkPrivacy'}
+        '400': {description: Invalid preference}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '409': {description: Preference changed or profile not initialized}
+  /network/suggestions:
+    get:
+      operationId: getNetworkSuggestions
+      description: Authenticated opt-in discoverable members excluding caller, bilateral blocks and active invitations/connections. Ascending public ID cursor, 20 per page, no-store. Mutual counts include only consenting discoverable intermediates and are zero unless target consents. No relevance ranking.
+      parameters:
+        - in: query
+          name: after
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Eligible members
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NetworkDiscoveryPage'}
+        '400': {description: Invalid cursor}
+        '401': {description: Authentication required}
+  /network/mutual/{id}:
+    get:
+      operationId: getMutualConnections
+      description: Requires target's member visibility, discovery and connection-sharing consent, and no bilateral block. Returns only currently discoverable, consenting intermediates connected to both parties, with no block against either party. Snapshot-consistent SQL read, no-store. No private counts.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string, format: uuid}
+        - in: query
+          name: after
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Up to 20 visible mutual connections ordered by public ID
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NetworkDiscoveryPage'}
+        '400': {description: Invalid identifier or cursor}
+        '401': {description: Authentication required}
+        '404': {description: Target unavailable or not consenting}
+  /followers:
+    get:
+      operationId: listMyFollowers
+      description: Owner-only follower list. Private profiles have redacted names and no profile link. Excludes bilateral blocks. Newest first, 20 items per page; no-store.
+      parameters:
+        - in: query
+          name: before
+          schema: {type: string, pattern: '^[1-9][0-9]*$'}
+      responses:
+        '200':
+          description: Followers and private total
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FollowingPage'}
+        '400': {description: Invalid cursor}
+        '401': {description: Authentication required}
+
+  /me/exports:
+    get:
+      operationId: listMyDataExports
+      description: Latest ten caller-owned business-data export requests; no-store. Does not include identity-provider credentials or other users' private contributions.
+      responses:
+        '200':
+          description: Export requests
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/DataExport'}}
+        '401': {description: Authentication required}
+  /me/exports/{id}:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: requestMyDataExport
+      description: Requires CSRF and a signed ID-token auth_time within five minutes. Idempotent client UUID; one new request per ten minutes and at most one queued/processing request. Snapshot is generated asynchronously from authoritative business data under repeatable-read isolation. Output limit 10 MiB and 10000 rows per section; oversize fails explicitly. Downloads expire 24 hours after completion. No Kafka payload contains exported data.
+      responses:
+        '200':
+          description: Durable request or same-owner retry
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DataExport'}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Request unavailable}
+        '409': {description: Initialize profile or finish current request}
+        '428': {description: Recent authentication required; OIDC screen=reauth requests max_age=0}
+        '429': {description: New export cooldown; Retry-After header}
+    delete:
+      operationId: cancelMyDataExport
+      description: CSRF and recent authentication required. Idempotently expires an owned request and erases its payload; any in-flight generation cannot publish afterward.
+      responses:
+        '204': {description: Canceled or already expired}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Request unavailable}
+        '428': {description: Recent authentication required}
+  /me/exports/{id}/download:
+    get:
+      operationId: downloadMyDataExport
+      description: Caller-owned ready unexpired archive, recent authentication required. JSON attachment, no-store, nosniff. Includes only the caller's business data; no passwords, tokens, other applicants or received message bodies. Download is audited. Reauthentication never accepts a caller-selected redirect.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Version 1 business-data snapshot
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '401': {description: Authentication required}
+        '404': {description: Request unavailable}
+        '409': {description: Not ready}
+        '410': {description: Expired or canceled}
+        '428': {description: Recent authentication required}
+  /recruiter-access:
+    get:
+      operationId: listRecruiterAccess
+      description: No organization parameter lists caller's invitations/access. With organization, only its owner may list team grants. 20 UUID-ordered rows, no-store. Roles do not verify employment. Names are visible only to owner and invited member.
+      parameters:
+        - {in: query, name: organization, schema: {type: string, format: uuid}}
+        - {in: query, name: after, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Authorized grants
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RecruiterAccessPage'}
+        '401': {description: Authentication required}
+        '403': {description: Owner required for team list}
+  /organizations/{organizationId}/recruiter-invitations/{id}:
+    parameters:
+      - {in: path, name: organizationId, required: true, schema: {type: string, format: uuid}}
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: inviteRecruiter
+      description: Owner and CSRF required. Invite an accepted, unblocked connection with client UUID. Same ID/company/connection replays return existing grant without reactivation; different reuse conflicts. At most 50 pending/active grants per company. Pending grants confer no permissions. Active recruiters can manage company jobs and review applications, but cannot edit the company, grant access or review their own application. New applications to a company they recruit for are prohibited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [connectionId]
+              properties:
+                connectionId: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Persisted invitation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RecruiterAccess'}
+        '401': {description: Authentication required}
+        '403': {description: Owner or CSRF required}
+        '409': {description: Unavailable connection, duplicate active grant, capacity or ID conflict}
+  /recruiter-access/{id}:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: changeRecruiterAccess
+      description: CSRF/expected version required. Invited member ACCEPTs or DECLINEs pending access and LEAVEs active access; company owner REVOKEs pending or active access. Terminal states cannot reactivate. New invitation required. Company-row locking serializes revocation with job/review writes; a write committed before revocation may succeed, later writes fail. Network removal/blocking does not revoke separately accepted business access; owner must revoke explicitly. Role changes are audited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, version]
+              properties:
+                action: {type: string, enum: [ACCEPT, DECLINE, LEAVE, REVOKE]}
+                version: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: Persisted access state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RecruiterAccess'}
+        '401': {description: Authentication required}
+        '403': {description: Action not permitted for caller or invalid CSRF}
+        '404': {description: Invitation unavailable}
+        '409': {description: Stale version or illegal transition}
+  /me/job-preferences:
+    get:
+      operationId: getMyJobPreferences
+      description: Caller-private, no-store job matching preferences. Unset defaults have empty query/location, null workplace and version 0. No preference row is created by reads.
+      responses:
+        '200':
+          description: Current preferences
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobPreferences'}
+        '401': {description: Authentication required}
+    put:
+      operationId: saveMyJobPreferences
+      description: CSRF required, caller-scoped, initialized profile required. Version 0 inserts once; subsequent writes compare expected version. Conflicts require refresh. Empty keywords/location and null workplace intentionally match all open jobs once saved. No job alert subscription or employment-data sharing is created. Local ACID/read-your-writes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobPreferences'}
+      responses:
+        '200':
+          description: Persisted preferences
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobPreferences'}
+        '400': {description: Invalid fields}
+        '401': {description: Authentication required}
+        '403': {description: Invalid CSRF}
+        '409': {description: Stale version or missing profile}
+  /jobs/{jobId}/questions:
+    parameters:
+      - {in: path, name: jobId, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getJobQuestions
+      description: Authenticated members may read the current public question set. Missing form is empty at version 0. No-store.
+      responses:
+        '200':
+          description: Current question set
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobQuestionForm'}
+        '401': {description: Authentication required}
+        '404': {description: Job unavailable}
+    put:
+      operationId: updateJobQuestions
+      description: Owner or active recruiter, CSRF and expected version required. Up to five ordered plain-text questions with unique UUIDs; prompts are trimmed. Every save increments question version independently of job version. Organization/job locks serialize with submission and revocation. Existing application snapshots never change. Empty set removes future questions. Stale or ambiguous writes require reload.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobQuestionForm'}
+      responses:
+        '200':
+          description: Persisted question set
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobQuestionForm'}
+        '400': {description: Invalid or duplicate questions}
+        '401': {description: Authentication required}
+        '403': {description: Recruiting access or CSRF required}
+        '404': {description: Job unavailable}
+        '409': {description: Stale question version}
+  /jobs/{jobId}/application:
+    parameters:
+      - {in: path, name: jobId, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: applyToJob
+      description: CSRF-protected profile-based submission. Shares a frozen name/headline snapshot and statement with company owner and active recruiters. One application per caller/job for this initial policy; exact normalized statement retries return the existing record even after closure or withdrawal, without reactivation. Different statement or resume conflicts. New submissions require an open job, initialized profile and applicant who is neither owner nor active recruiter. Organization/job locks serialize against closure and recruiter revocation. Optional UTF-8 plain-text resume is stored atomically with the application. Maximum 20 KiB of UTF-8 text, no binary/control characters except tab and newlines. Resume bytes must also match on retry; filename is validated but not retained. PDF/DOCX are not supported. Maximum JSON request body 192 KiB. questionVersion must match the loaded form for new submissions (omitted means 0). Required answers must be nonblank; duplicate or unknown IDs are invalid. Prompts, required flags and trimmed answers are snapshotted atomically. Retries compare the original version and normalized answers, even if the current questions changed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [statement]
+              properties:
+                statement: {type: string, minLength: 1, maxLength: 4000}
+                resume: {$ref: '#/components/schemas/ResumeSubmission'}
+                questionVersion: {type: integer, format: int64, minimum: 0}
+                answers:
+                  type: array
+                  maxItems: 5
+                  items: {$ref: '#/components/schemas/ApplicationAnswer'}
+      responses:
+        '200':
+          description: Persisted application receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobApplication'}
+        '400': {description: Invalid statement, resume or answers}
+        '422': {description: Required answer missing}
+        '413': {description: JSON request body exceeds 192 KiB}
+        '401': {description: Authentication required}
+        '403': {description: Invalid CSRF}
+        '404': {description: Job unavailable}
+        '409': {description: Closed job, duplicate conflict, company recruiter applying or missing profile}
+  /applications:
+    get:
+      operationId: listApplications
+      description: Caller-only MINE or company-owner/active-recruiter-only RECEIVED view. Optional exact status filter composes with authorization and job before pagination. Includes closed jobs. UUID ascending pages of 20, no-store. Snapshot/statement visible only to applicant and owning company owner or active recruiter. These records remain visible to those parties independently of personal profile visibility and later personal blocking.
+      parameters:
+        - {in: query, name: status, schema: {type: string, enum: [SUBMITTED, REVIEWING, ACCEPTED, REJECTED, WITHDRAWN]}}
+        - {in: query, name: view, schema: {type: string, enum: [MINE, RECEIVED], default: MINE}}
+        - {in: query, name: job, schema: {type: string, format: uuid}}
+        - {in: query, name: after, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Authorized applications
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationPage'}
+        '401': {description: Authentication required}
+  /applications/{id}/resume:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: downloadApplicationResume
+      description: Applicant, company owner or current active recruiter only. Unknown, missing resume and unauthorized records all return 404. Immutable UTF-8 text, no-store, nosniff, sandbox CSP and attachment filename resume.txt. No public object URL. Resume text is absent from list/history/event responses. Withdrawal retains the application and resume under the existing retention policy.
+      responses:
+        '200':
+          description: Authorized plain-text resume download
+          content:
+            text/plain:
+              schema: {type: string}
+        '401': {description: Authentication required}
+        '404': {description: Resume unavailable}
+  /applications/{id}/history:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getApplicationHistory
+      description: Applicant/company-owner/active-recruiter-only committed transition history, chronological version order, no-store. One SQL statement returns a consistent application version and audit rows. Current acyclic lifecycle bounds history to at most three entries. Exposes actor roles, not identity subjects, statement or private profile fields. Unknown and unauthorized IDs both return 404.
+      responses:
+        '200':
+          description: Committed application timeline
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationHistory'}
+        '401': {description: Authentication required}
+        '404': {description: Application unavailable to caller}
+  /applications/{id}/status:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: changeApplicationStatus
+      description: CSRF and expected version required. Applicant may withdraw SUBMITTED/REVIEWING; owner or active recruiter may move SUBMITTED to REVIEWING/REJECTED, or REVIEWING to ACCEPTED/REJECTED. Terminal states cannot change. Status and audit row commit atomically; a lossy content-free refresh hint is dispatched after commit. Version conflicts require refresh, not blind retry. Accepted is an application review decision, not a signed offer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, version]
+              properties:
+                status: {type: string, enum: [REVIEWING, ACCEPTED, REJECTED, WITHDRAWN]}
+                version: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: Persisted status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobApplication'}
+        '400': {description: Invalid request}
+        '401': {description: Authentication required}
+        '403': {description: Invalid actor transition or CSRF}
+        '404': {description: Application unavailable to caller}
+        '409': {description: Stale version or illegal state transition}
+  /jobs:
+    get:
+      operationId: listJobs
+      description: Authenticated literal title/company and location search, UUID ascending keyset pages of 20. PREFERRED matches open jobs against caller-saved keyword/location/workplace preferences, composed with explicit filters; unset preferences yield no matches. This is deterministic matching, not ranked recommendations. OPEN and PREFERRED exclude caller-dismissed jobs; DISMISSED lists caller-dismissed jobs including closed roles. Saved jobs are unaffected by dismissal. OPEN shows open jobs only; MANAGED shows jobs in companies the caller owns or actively recruits for; SAVED includes closed jobs saved by caller. Optional organization and workplace filters compose before pagination. No-store.
+      parameters:
+        - {in: query, name: q, schema: {type: string, maxLength: 80}}
+        - {in: query, name: location, schema: {type: string, maxLength: 120}}
+        - {in: query, name: view, schema: {type: string, enum: [OPEN, MANAGED, SAVED, PREFERRED, DISMISSED], default: OPEN}}
+        - {in: query, name: organization, schema: {type: string, format: uuid}}
+        - {in: query, name: workplace, schema: {type: string, enum: [REMOTE, HYBRID, ONSITE]}}
+        - {in: query, name: after, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Matching jobs
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobPage'}
+        '400': {description: Invalid filters}
+        '401': {description: Authentication required}
+  /jobs/{id}:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getJob
+      description: Authenticated detail remains accessible for closed jobs, with explicit status.
+      responses:
+        '200':
+          description: Job detail
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Job'}
+        '404': {description: Job unavailable}
+        '401': {description: Authentication required}
+    put:
+      operationId: publishOrUpdateJob
+      description: Company-owner/active-recruiter-only and CSRF protected. Version 0 creates an OPEN job with client UUID; exact initial retries return version 1. Existing jobs require expected version, immutable organizationId, and owner or active recruiter authorization. OPEN and CLOSED can transition in either direction. No application workflow is provided by this operation. Local ACID/read-your-writes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobWrite'}
+      responses:
+        '200':
+          description: Persisted job
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Job'}
+        '400': {description: Invalid fields or creation state}
+        '401': {description: Authentication required}
+        '403': {description: No recruiting access or invalid CSRF}
+        '409': {description: Version, job ID or company mismatch}
+  /jobs/{id}/dismissed:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: dismissJob
+      description: Caller-private idempotent dismissal from discovery and preferred views. CSRF and initialized profile required. Does not delete jobs, saves or applications. Direct authorized job reads remain available. Last committed dismiss/restore wins.
+      responses:
+        '204': {description: Dismissed}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Job absent}
+        '409': {description: Initialize profile first}
+    delete:
+      operationId: restoreDismissedJob
+      description: Caller-private idempotent restoration. CSRF required; removes only the caller dismissal. Read-your-writes.
+      responses:
+        '204': {description: Restored}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+  /jobs/{id}/saved:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: saveJob
+      description: CSRF protected idempotent bookmark for caller with initialized profile. Saving is not an application. Closed jobs may be retained/saved.
+      responses:
+        '204': {description: Saved}
+        '401': {description: Authentication required}
+        '403': {description: Invalid CSRF}
+        '404': {description: Job unavailable}
+        '409': {description: Initialize profile first}
+    delete:
+      operationId: unsaveJob
+      description: CSRF protected idempotent removal of caller bookmark only.
+      responses:
+        '204': {description: Not saved}
+        '401': {description: Authentication required}
+        '403': {description: Invalid CSRF}
+  /organizations:
+    get:
+      operationId: listOrganizations
+      description: Authenticated company directory. Literal case-insensitive name/industry search, 20 UUID-ordered rows per page. managed restricts results to caller-owned pages; following restricts to caller follows. No-store. Company pages are member-created, not verified organizations or employment records.
+      parameters:
+        - {in: query, name: q, schema: {type: string, maxLength: 80}}
+        - {in: query, name: view, schema: {type: string, enum: [ALL, MANAGED, FOLLOWING], default: ALL}}
+        - {in: query, name: after, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Company page results
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrganizationPage'}
+        '400': {description: Invalid query or cursor}
+        '401': {description: Authentication required}
+  /organizations/{id}:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getOrganization
+      responses:
+        '200':
+          description: Company overview and caller-specific permissions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Organization'}
+        '404': {description: Company unavailable}
+        '401': {description: Authentication required}
+    put:
+      operationId: saveOrganization
+      description: CSRF required. Version 0 creates a page owned by the caller with initialized profile. Exact creation retries return version 1; conflicting UUID reuse returns 409. Existing pages require owner and expected version. Ownership cannot be supplied or changed. Local ACID read-your-writes. Members can create unverified company pages; this does not verify employment or brand authority.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OrganizationWrite'}
+      responses:
+        '200':
+          description: Persisted company overview
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Organization'}
+        '400': {description: Invalid fields}
+        '401': {description: Authentication required}
+        '403': {description: Only owner may manage page; or invalid CSRF}
+        '409': {description: Version or creation conflict; or profile not initialized}
+  /organizations/{id}/follow:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: followOrganization
+      description: CSRF required. Idempotently follows this organization for caller. Initialized profile required. Owners may follow their own page. Follower identities remain private; aggregate count is visible to authenticated members.
+      responses:
+        '204': {description: Following}
+        '404': {description: Company unavailable}
+        '409': {description: Initialize profile first}
+        '401': {description: Authentication required}
+        '403': {description: Invalid CSRF}
+    delete:
+      operationId: unfollowOrganization
+      description: CSRF required. Idempotently removes only caller's follow. No other member's follow is affected.
+      responses:
+        '204': {description: Not following}
+        '401': {description: Authentication required}
+        '403': {description: Invalid CSRF}
+  /conversations:
+    get:
+      operationId: listConversations
+      description: Participant-only, unblocked direct conversations, newest-created first, 20 per page. INBOX excludes own archived conversations; ARCHIVED includes own archived conversations; STARRED includes own starred conversations regardless of archive state. Optional q is a literal case-insensitive substring of the counterpart name (trimmed, up to 120 characters); empty q lists all. Message bodies are not searched. Reset cursor on query or view changes. Counts incoming messages after own monotonic read cursor. No-store.
+      parameters:
+        - {in: query, name: q, schema: {type: string, maxLength: 120}}
+        - {in: query, name: view, schema: {type: string, enum: [INBOX, ARCHIVED, STARRED], default: INBOX}}
+        - {in: query, name: before, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+      responses:
+        '200':
+          description: Conversation page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConversationPage'}
+    post:
+      operationId: startConversation
+      description: Requires accepted connection and CSRF. One canonical conversation per pair. Repeated creates return the same conversation ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memberId]
+              properties:
+                memberId: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Existing or new conversation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: {type: string, format: uuid}
+        '404': {description: Member or accepted connection unavailable}
+  /conversations/{id}/messages:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getMessages
+      description: Participant-only latest 50 messages before optional conversation-local sequence. Items are ascending within each page. Blocked conversations unavailable. Persisted history survives connection removal; canSend is then false. Read flags mean the recipient acknowledged the sequence.
+      parameters:
+        - {in: query, name: before, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+      responses:
+        '200':
+          description: Durable message history
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessagePage'}
+        '404': {description: Conversation unavailable}
+  /conversations/{id}/messages/{messageId}:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      - {in: path, name: messageId, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: sendMessage
+      description: Participant + accepted connection + no block + CSRF. Client UUID idempotency; matching normalized text/author/conversation reuses the same message. Conflicting UUID reuse returns 409. Pair and conversation locks serialize sends with blocks and assign increasing conversation-local sequence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: {type: string, minLength: 1, maxLength: 3000}
+      responses:
+        '200':
+          description: Confirmed persisted message
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Message'}
+        '400': {description: Invalid text}
+        '404': {description: Conversation or permission unavailable}
+        '409': {description: Conflicting message ID}
+  /conversations/{id}/preferences:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: setConversationPreferences
+      description: Participant-owned star/archive state with expected version and CSRF. Does not change the other participant's settings or read cursor. New messages restore both inboxes and increment versions only where archive state changes; duplicate sends do not restore archived conversations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConversationPreference'}
+      responses:
+        '200':
+          description: Confirmed caller preference
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConversationPreference'}
+        '400': {description: Invalid preference}
+        '403': {description: CSRF required}
+        '404': {description: Not a participant or blocked}
+        '409': {description: Stale preference version}
+  /conversations/{id}/read:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: acknowledgeMessages
+      description: Participant-only, unblocked, CSRF-protected monotonic read acknowledgment. Cannot exceed the current latest sequence. Lower/repeated cursors are harmless.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [throughSequence]
+              properties:
+                throughSequence: {type: integer, format: int64, minimum: 0}
+      responses:
+        '204': {description: Read state persisted}
+        '400': {description: Invalid or future sequence}
+        '404': {description: Conversation unavailable}
+  /me/discovery:
+    get:
+      operationId: getMyDiscovery
+      responses:
+        '200':
+          description: Caller-owned people-search opt-in, default false
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Discovery'}
+    put:
+      operationId: setMyDiscovery
+      description: Versioned opt-in with session and CSRF. Search requires both discoverable and memberVisible. Turning discovery off hides the member immediately on subsequent searches.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Discovery'}
+      responses:
+        '200':
+          description: Confirmed preference
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Discovery'}
+        '409': {description: Stale preference or uninitialized profile}
+  /search/people:
+    get:
+      operationId: searchPeople
+      description: Literal case-insensitive substring of name/headline, optional location substring. Only opted-in shared profiles, excluding self and blocks in either direction. PostgreSQL source reads, no-store. Stable ascending public UUID order, 20 per page; reset cursor on query/filter change. No relevance ranking or total count.
+      parameters:
+        - {in: query, name: q, required: true, schema: {type: string, minLength: 2, maxLength: 80}}
+        - {in: query, name: location, schema: {type: string, maxLength: 120}}
+        - {in: query, name: after, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Authorized member search page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PeoplePage'}
+        '400': {description: Invalid query, filter or cursor}
+        '401': {description: Authentication required}
+  /following:
+    get:
+      operationId: listFollowing
+      description: Caller-owned directed follows, newest first, 20 per page. Private targets have a masked name and no profile link. Blocks remove follows in both directions. No-store, read-your-writes.
+      parameters:
+        - {in: query, name: before, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+      responses:
+        '200':
+          description: Following page and total count
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FollowingPage'}
+        '401': {description: Authentication required}
+  /following/{id}:
+    parameters:
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getFollowState
+      description: Caller follow state. Unshared targets are unavailable unless already followed. Self and blocked targets unavailable.
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FollowState'}
+        '404': {description: Member unavailable}
+    put:
+      operationId: setFollowState
+      description: CSRF-protected idempotent desired state. Following requires an opted-in target and initialized caller. Unfollowing remains possible after target privacy changes. Pair locking serializes blocks and concurrent follows. No connection invitation is created.
+      parameters:
+        - {in: header, name: X-CSRF-TOKEN, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FollowState'}
+      responses:
+        '200':
+          description: Confirmed state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FollowState'}
+        '400': {description: Invalid state}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Member unavailable}
+  /notifications/preferences:
+    get:
+      operationId: getNotificationPreferences
+      responses:
+        '200':
+          description: Caller-owned connection and job application notification preferences, both default enabled
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationPreference'}
+    put:
+      operationId: setNotificationPreferences
+      description: Versioned caller-owned preferences with CSRF. Optional jobs flag preserves its previous value when omitted (defaults true on creation). Applies at event consumption; previously delivered notifications remain. Disabled events are consumed without later backfill.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NotificationPreference'}
+      responses:
+        '200':
+          description: Saved preference
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationPreference'}
+        '409': {description: Stale version or profile uninitialized}
+  /notifications:
+    get:
+      operationId: listMyNotifications
+      description: Caller-owned connection and application notifications. Connections suppress removed/blocked targets. Applications require current applicant/owner access; personal networking blocks do not revoke business access. Application status/version describe the historical transition, not necessarily current state. Owner receives submission/withdrawal; applicant receives reviewing/acceptance/rejection. Recruiter fan-out not supported. Recent delivery first, 20 items, no-store; unreadCount covers all categories regardless of filter.
+      parameters:
+        - {in: query, name: category, schema: {type: string, enum: [ALL, NETWORK, JOBS], default: ALL}}
+        - {in: query, name: before, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+      responses:
+        '200':
+          description: Notification page
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationPage'}
+        '401': {description: Authentication required}
+  /notifications/{id}/read:
+    delete:
+      operationId: markNotificationUnread
+      description: Idempotently clears read state for a caller-owned non-dismissed notification. Requires CSRF. Last committed read/unread action wins.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Unread state saved}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Not owned, dismissed or absent}
+    put:
+      operationId: markNotificationRead
+      description: Idempotent mark-read for a caller-owned notification. Requires CSRF. No notification bodies accepted.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: header, name: X-CSRF-TOKEN, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Read state saved}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Not owned or absent}
+  /notifications/read:
+    put:
+      operationId: markAllNotificationsRead
+      description: Marks caller-owned visible notifications through the supplied readThrough sequence from a list response. Newer arrivals remain unread. All categories; idempotent, read-your-writes, CSRF required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [through]
+              properties:
+                through: {type: string, pattern: '^[1-9][0-9]{0,18}$'}
+      responses:
+        '204': {description: Read state saved}
+        '400': {description: Invalid boundary}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+  /notifications/{id}:
+    delete:
+      operationId: dismissNotification
+      description: Caller-owned soft dismissal. Idempotent; retained event identity prevents redelivery from recreating the notification. Excluded from lists and counts. Requires CSRF.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Dismissed}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Not owned or absent}
+  /search/posts:
+    get:
+      operationId: searchPosts
+      description: Authenticated case-insensitive literal text search, newest first. Checks current audience, deletion and bilateral blocks on every read. Includes caller's private posts only for that caller. Read-your-writes, no-store; reset cursor when query changes.
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: {type: string, minLength: 2, maxLength: 80}
+        - in: query
+          name: before
+          schema: {type: string, pattern: '^[1-9][0-9]*$'}
+      responses:
+        '200':
+          description: Up to 20 visible posts with an optional next cursor
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FeedPage'}
+        '400': {description: Invalid query or cursor}
+        '401': {description: Authentication required}
+  /feed:
+    get:
+      operationId: getRecentFeed
+      description: Authenticated recent-first posts. RECENT includes own posts and member-visible posts. FOLLOWING includes only currently followed authors. RECENT and FOLLOWING exclude caller-hidden posts. HIDDEN lists caller-hidden posts still readable under current audience, deletion, moderation and blocking rules. Saving, searching or viewing activity is independent of hiding. A private profile summary does not revoke an explicitly member-visible post. Read-your-writes; no-store. Cursor is the last displayed sequence; reset it when scope changes. No ranking or cached projection.
+      parameters:
+        - in: query
+          name: scope
+          schema: {type: string, enum: [RECENT, FOLLOWING, HIDDEN], default: RECENT}
+        - in: query
+          name: before
+          schema: {type: string, pattern: '^[1-9][0-9]*$'}
+      responses:
+        '200':
+          description: Up to 20 posts and an optional next cursor
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FeedPage'}
+        '400': {description: Invalid cursor}
+        '401': {description: Authentication required}
+  /saved-posts:
+    get:
+      operationId: listMySavedPosts
+      description: Private bookmark list of currently readable posts, ordered by original post sequence descending. Up to 20 items. Privacy/blocking/deletion are checked on every read; saving never grants access. No-store.
+      parameters:
+        - {in: query, name: before, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+      responses:
+        '200':
+          description: Saved visible posts
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FeedPage'}
+        '400': {description: Invalid cursor}
+        '401': {description: Authentication required}
+  /posts/{id}/saved:
+    put:
+      operationId: setMySavedPost
+      description: Sets caller-owned saved state idempotently. Requires readable parent post and CSRF. Post edit version is unchanged. No-store; returns caller state only, not bookmark counts or other members.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: header, name: X-CSRF-TOKEN, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SavedPostWrite'}
+      responses:
+        '200':
+          description: Persisted caller saved state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Post'}
+        '400': {description: State missing or invalid}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Post unavailable}
+        '409': {description: Profile uninitialized}
+  /posts/{postId}/comments:
+    get:
+      operationId: listPostComments
+      description: Authenticated recent-first top-level comments, or direct replies when parentId is supplied. One reply level is supported. Filters blocked commenters and blocked/deleted parents in both directions, and checks current post visibility. Up to 20 items per thread. No-store and read-your-writes.
+      parameters:
+        - {in: path, name: postId, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: before, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+        - {in: query, name: parentId, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Visible comments
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommentPage'}
+        '400': {description: Invalid cursor}
+        '401': {description: Authentication required}
+        '404': {description: Parent post unavailable}
+  /posts/{postId}/comments/{id}:
+    parameters:
+      - {in: path, name: postId, required: true, schema: {type: string, format: uuid}}
+      - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    put:
+      operationId: createPostComment
+      description: Creates immutable plain-text comment or direct reply owned by caller. A reply parent must be a visible, undeleted top-level comment in this post. Nested replies and cross-post parents return 404. Same ID, parentId and normalized text may be retried; conflicts never overwrite. Requires CSRF. Visibility checked after block/post locks. No-store.
+      parameters:
+        - {in: header, name: X-CSRF-TOKEN, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CommentWrite'}
+      responses:
+        '200':
+          description: Persisted comment
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Comment'}
+        '400': {description: Invalid text}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Parent post unavailable}
+        '409': {description: ID conflict or profile uninitialized}
+    delete:
+      operationId: deleteMyComment
+      description: Owner-only soft deletion on a readable post. Idempotent for own matching ID including already deleted rows. Deleting a parent hides its replies from reads without deleting their retained records. Does not allow post authors to remove another member's comment. Requires CSRF.
+      parameters:
+        - {in: header, name: X-CSRF-TOKEN, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Own comment deleted}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Comment not owned or parent post unavailable}
+  /posts/{id}/hidden:
+    put:
+      operationId: setMyPostHiddenState
+      description: Authenticated CSRF-protected desired state, private to caller. Idempotent hide/restore with local transaction locking. Requires a currently readable post. Hiding only affects caller's Recent and Following feeds; it never changes audience or reports content. No-store.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hidden]
+              properties:
+                hidden: {type: boolean}
+      responses:
+        '204': {description: Preference persisted}
+        '400': {description: Missing or invalid desired state}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Post unavailable}
+  /posts/{id}/reaction:
+    put:
+      operationId: setMyPostReaction
+      description: Set the authenticated member's Like state, never toggle blindly. Repeating the same state is idempotent. Only readable posts may be reacted to. Serializes with post edits/deletion and member blocking. Returns authoritative counts; does not change post edit version. Requires CSRF.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string, format: uuid}
+        - in: header
+          name: X-CSRF-TOKEN
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReactionWrite'}
+      responses:
+        '200':
+          description: Updated post with total likes and caller state; no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Post'}
+        '400': {description: Invalid or missing state}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '404': {description: Private, blocked, deleted or missing post}
+        '409': {description: Profile must be initialized}
+  /posts/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getPost
+      description: Same visibility policy as feed; unavailable and private posts both return 404.
+      responses:
+        '200':
+          description: Visible post, no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Post'}
+        '401': {description: Authentication required}
+        '404': {description: Unavailable}
+    put:
+      operationId: savePost
+      description: Owner-only. Version zero creates a client UUID; matching unchanged creation retry returns the existing version-one post. Edits compare version. Deleted IDs cannot be reused. Text is plain text. Requires CSRF. Read-your-writes.
+      parameters:
+        - in: header
+          name: X-CSRF-TOKEN
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PostWrite'}
+      responses:
+        '200':
+          description: Persisted post
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Post'}
+        '400': {description: Invalid text or visibility}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '409': {description: Ownership, version or creation conflict}
+    delete:
+      operationId: deletePost
+      description: Owner-only versioned soft deletion; removes post from subsequent feed and detail reads. Requires CSRF. Stale or duplicate deletion returns 409 without additional effects.
+      parameters:
+        - in: query
+          name: version
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - in: header
+          name: X-CSRF-TOKEN
+          required: true
+          schema: {type: string}
+      responses:
+        '204': {description: Deleted}
+        '401': {description: Authentication required}
+        '403': {description: CSRF required}
+        '409': {description: Unavailable or changed}
+  /me:
+    get:
+      operationId: getMyProfile
+      description: Initializes the authenticated subject's profile if absent. Read-your-writes consistency.
+      responses:
+        '200':
+          description: Own profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Profile'}
+        '401': {description: Authentication required}
+    put:
+      operationId: updateMyProfile
+      description: Owner-only compare-and-swap update. Stale versions return 409; retrieve current profile before retrying.
+      parameters:
+        - in: header
+          name: X-CSRF-TOKEN
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Profile'}
+      responses:
+        '200':
+          description: Persisted profile with incremented version
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Profile'}
+        '400': {description: Invalid fields}
+        '401': {description: Authentication required}
+        '403': {description: Missing or invalid CSRF token}
+        '409': {description: Concurrent edit or profile not initialized}
+  /me/experience:
+    get:
+      operationId: listMyExperience
+      responses:
+        '200':
+          description: Own experience ordered by start date descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Experience'}
+    put:
+      operationId: saveExperience
+      description: Owner-only write. Client-generated UUID with version zero creates; subsequent writes compare versions. Duplicate/stale writes return 409 without extra rows. Requires CSRF header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Experience'}
+      responses:
+        '200':
+          description: Persisted entry
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Experience'}
+        '400': {description: Invalid fields or date range}
+        '409': {description: Entry unavailable or stale version}
+  /me/experience/{id}:
+    delete:
+      operationId: deleteExperience
+      description: Owner-only version-checked deletion. Requires CSRF header.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: version, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '204': {description: Deleted}
+        '409': {description: Entry unavailable or stale version}
+  /me/skills:
+    get:
+      operationId: listMySkill
+      responses:
+        '200':
+          description: Own skills ordered alphabetically
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Skill'}
+    put:
+      operationId: saveSkill
+      description: Owner-only write. Client-generated UUID with version zero creates; subsequent writes compare versions. Duplicate/stale writes return 409 without extra rows. Requires CSRF header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Skill'}
+      responses:
+        '200':
+          description: Persisted entry
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Skill'}
+        '400': {description: Invalid skill name}
+        '409': {description: Duplicate name, unavailable skill or stale version}
+  /me/skills/{id}:
+    delete:
+      operationId: deleteSkill
+      description: Owner-only version-checked deletion. Requires CSRF header.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: version, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '204': {description: Deleted}
+        '409': {description: Duplicate name, unavailable skill or stale version}
+  /me/languages:
+    get:
+      operationId: listMyLanguage
+      responses:
+        '200':
+          description: Own languages ordered alphabetically
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Language'}
+    put:
+      operationId: saveLanguage
+      description: Owner-only write. Client-generated UUID with version zero creates; subsequent writes compare versions. Duplicate/stale writes return 409 without extra rows. Requires CSRF header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Language'}
+      responses:
+        '200':
+          description: Persisted entry
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Language'}
+        '400': {description: Invalid language name}
+        '409': {description: Duplicate name, unavailable language or stale version}
+  /me/languages/{id}:
+    delete:
+      operationId: deleteLanguage
+      description: Owner-only version-checked deletion. Requires CSRF header.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: version, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '204': {description: Deleted}
+        '409': {description: Duplicate name, unavailable language or stale version}
+  /me/education:
+    get:
+      operationId: listMyEducation
+      responses:
+        '200':
+          description: Own education ordered by start date descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Education'}
+    put:
+      operationId: saveEducation
+      description: Owner-only write. Client-generated UUID with version zero creates; subsequent writes compare versions. Duplicate/stale writes return 409 without extra rows. Requires CSRF header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Education'}
+      responses:
+        '200':
+          description: Persisted entry
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Education'}
+        '400': {description: Invalid fields or date range}
+        '409': {description: Entry unavailable or stale version}
+  /me/education/{id}:
+    delete:
+      operationId: deleteEducation
+      description: Owner-only version-checked deletion. Requires CSRF header.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: version, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '204': {description: Deleted}
+        '409': {description: Entry unavailable or stale version}
+  /me/projects:
+    get:
+      operationId: listMyProject
+      responses:
+        '200':
+          description: Own projects ordered by start date descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Project'}
+    put:
+      operationId: saveProject
+      description: Owner-only write. Client-generated UUID with version zero creates; subsequent writes compare versions. Duplicate/stale writes return 409 without extra rows. Requires CSRF header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Project'}
+      responses:
+        '200':
+          description: Persisted entry
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Project'}
+        '400': {description: Invalid fields or date range}
+        '409': {description: Entry unavailable or stale version}
+  /me/projects/{id}:
+    delete:
+      operationId: deleteProject
+      description: Owner-only version-checked deletion. Requires CSRF header.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: version, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '204': {description: Deleted}
+        '409': {description: Entry unavailable or stale version}
+  /me/certifications:
+    get:
+      operationId: listMyCertification
+      responses:
+        '200':
+          description: Own certifications ordered by start date descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Certification'}
+    put:
+      operationId: saveCertification
+      description: Owner-only write. Client-generated UUID with version zero creates; subsequent writes compare versions. Duplicate/stale writes return 409 without extra rows. Requires CSRF header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Certification'}
+      responses:
+        '200':
+          description: Persisted entry
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Certification'}
+        '400': {description: Invalid fields or date range}
+        '409': {description: Entry unavailable or stale version}
+  /me/certifications/{id}:
+    delete:
+      operationId: deleteCertification
+      description: Owner-only version-checked deletion. Requires CSRF header.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: version, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '204': {description: Deleted}
+        '409': {description: Entry unavailable or stale version}
+  /logout:
+    post:
+      operationId: logout
+      description: CSRF-protected browser form POST. Invalidates the application session and redirects to Keycloak end-session endpoint. Browser ends on the identity provider signed-out page.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [_csrf]
+              properties:
+                _csrf: {type: string}
+      responses:
+        '302': {description: Redirect to identity provider logout}
+        '403': {description: Missing or invalid CSRF token}
+  /me/preferences:
+    get:
+      operationId: getMyPreferences
+      responses:
+        '200':
+          description: Account preferences, defaults initialized on first read
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Preferences'}
+        '401': {description: Authentication required}
+        '409': {description: Profile must be initialized first}
+    put:
+      operationId: updateMyPreferences
+      description: Owner-only compare-and-swap; read-your-writes consistency; no automatic retry on conflict.
+      parameters:
+        - {in: header, name: X-CSRF-TOKEN, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Preferences'}
+      responses:
+        '200':
+          description: Saved preferences
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Preferences'}
+        '400': {description: Invalid theme or version}
+        '401': {description: Authentication required}
+        '403': {description: Missing or invalid CSRF token}
+        '409': {description: Stale preferences; reload and retry}
+  /me/visibility:
+    get:
+      operationId: getMyVisibility
+      responses:
+        '200':
+          description: Own sharing state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Visibility'}
+    put:
+      operationId: updateMyVisibility
+      description: Owner-only versioned opt-in. Requires CSRF header. New reads immediately enforce confirmed state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/VisibilityUpdate'}
+      responses:
+        '200':
+          description: Persisted state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Visibility'}
+        '409': {description: Stale version or missing self profile}
+  /me/sessions:
+    get:
+      operationId: listMySessions
+      description: Authenticated caller's active Meridian sessions (newest 100). IDs are noncredential management IDs. No IP address, tokens, cookies or identity-provider sessions returned. No-store.
+      responses:
+        '200':
+          description: Active application sessions
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/AccountSession'}}
+        '401': {description: Authentication required}
+    delete:
+      operationId: revokeAllMySessions
+      description: CSRF-protected atomic deletion of all currently persisted Meridian sessions for the caller, including current. New sign-ins after this transaction remain possible and require interactive identity-provider authentication. Does not revoke Keycloak SSO sessions or credentials. In-flight requests may finish; subsequent requests fail authentication; sockets close within five seconds. Audit commits with deletion.
+      responses:
+        '204': {description: Sessions revoked}
+        '401': {description: Authentication required}
+        '403': {description: CSRF rejected}
+  /me/sessions/{id}:
+    delete:
+      operationId: revokeMySession
+      description: Owner-scoped, CSRF-protected revocation using noncredential management ID. Missing or foreign ID returns 204 without changes. Retrying is idempotent. No-store. Current session may be revoked; next request must sign in.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Session absent or revoked}
+        '400': {description: Invalid management ID}
+        '401': {description: Authentication required}
+        '403': {description: CSRF rejected}
+  /me/photo:
+    get:
+      operationId: getMyProfilePhoto
+      responses:
+        '200':
+          description: Normalized PNG, no-store
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+        '404': {description: No photo}
+        '503': {description: Private object storage unavailable}
+    put:
+      operationId: uploadMyProfilePhoto
+      description: Session and CSRF required. Owner-only replacement; last successful write wins. Maximum 2 MiB, JPEG or PNG, at most 4096 pixels per side and 16 megapixels. Re-encoded PNG at most 512 pixels per side, without source metadata. Read-your-writes persistence. Optional private S3 objects are published only after storage succeeds; prior photo remains authoritative if storage fails. Storage keys are never exposed.
+      requestBody:
+        required: true
+        content:
+          image/png:
+            schema: {type: string, format: binary}
+          image/jpeg:
+            schema: {type: string, format: binary}
+      responses:
+        '204': {description: Photo persisted}
+        '401': {description: Sign in required}
+        '403': {description: CSRF rejected}
+        '409': {description: Profile not initialized or upload expired}
+        '413': {description: File too large}
+        '422': {description: Invalid image or dimensions}
+        '503': {description: Storage write failed; current photo remains unchanged}
+    delete:
+      operationId: removeMyProfilePhoto
+      description: Session and CSRF required. Idempotent owner-only removal. Visibility ends immediately; unreferenced S3 objects are collected asynchronously.
+      responses:
+        '204': {description: Photo removed}
+  /profiles/{id}/photo:
+    get:
+      operationId: getVisibleProfilePhoto
+      security: []
+      description: Same public/member/owner visibility and blocking rules as the profile summary. No-store on every read.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Normalized PNG
+          content:
+            image/png:
+              schema: {type: string, format: binary}
+        '401': {description: Guest must sign in}
+        '404': {description: Unavailable profile or photo}
+        '503': {description: Private object storage unavailable}
+  /profile-login/{id}:
+    get:
+      operationId: signInForProfile
+      security: []
+      description: Stores a UUID-only profile return target in the server session and redirects to OIDC login. Successful login consumes the target. No arbitrary redirect URLs accepted.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '302': {description: Redirect to identity provider authorization entry point}
+        '400': {description: Invalid profile identifier}
+  /profiles/{id}:
+    get:
+      operationId: getMemberSummary
+      security: []
+      description: Anonymous visitors see explicitly public summaries only; otherwise 401. Signed-in members see public or member-visible summaries, subject to blocking. Owner can see own summary. No contact or credential data. No-store response.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Visible summary
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MemberSummary'}
+        '401': {description: Authentication required}
+        '404': {description: Missing or private profile}
+  /network:
+    get:
+      operationId: getMyNetwork
+      responses:
+        '200':
+          description: Own pending requests and accepted connections
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Connection'}}
+    post:
+      operationId: requestConnection
+      description: CSRF required. New invitations require a visible member summary. Reusing the same UUID with the same sender/recipient returns 204 without effects, even after state advancement, unless currently blocked. Different UUIDs for an active unordered pair or mismatched ownership/recipient conflict.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, recipientId]
+              properties:
+                id: {type: string, format: uuid}
+                recipientId: {type: string, format: uuid}
+      responses:
+        '204': {description: Request persisted}
+        '409': {description: Duplicate, self-request or unavailable recipient}
+  /network/{id}:
+    put:
+      operationId: transitionConnection
+      description: CSRF and expected version required. Recipient accepts/ignores; sender withdraws; either party removes accepted connection. An authorized replay of the immediately completed action/version returns 204 without another event. Later state advancement makes older retries conflict.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, version]
+              properties:
+                action: {type: string, enum: [ACCEPT, IGNORE, WITHDRAW, REMOVE]}
+                version: {type: integer, format: int64, minimum: 0}
+      responses:
+        '204': {description: Transition committed}
+        '409': {description: Stale, unavailable or unauthorized transition}
+  /blocks:
+    get:
+      operationId: listMyBlocks
+      responses:
+        '200':
+          description: Only blocks created by current member
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Block'}}
+    post:
+      operationId: blockMember
+      description: CSRF required. Idempotent block. Closes active relationships and denies summary reads/invitations in both directions. Target must be visible or have relationship history with actor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memberId]
+              properties:
+                memberId: {type: string, format: uuid}
+      responses:
+        '204': {description: Block committed}
+        '404': {description: Target unavailable or self}
+  /blocks/{id}:
+    delete:
+      operationId: unblockMember
+      description: CSRF required. Removes only caller-owned block; never restores relationships.
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Caller block absent}
+  /csrf:
+    get:
+      operationId: getCsrfToken
+      responses:
+        '200':
+          description: Session-bound CSRF token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, header]
+                properties:
+                  token: {type: string}
+                  header: {type: string}
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: JSESSIONID
+  schemas:
+    SearchHistoryEntry:
+      type: object
+      required: [id, kind, query, location, searchedAt]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [people, companies, jobs, posts]}
+        query: {type: string}
+        location: {type: string}
+        searchedAt: {type: string, format: date-time}
+    SearchHistoryState:
+      type: object
+      required: [enabled, version, items]
+      properties:
+        enabled: {type: boolean}
+        version: {type: integer, format: int64, minimum: 0}
+        items:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/SearchHistoryEntry'}
+    SearchHistoryWrite:
+      type: object
+      required: [kind, query, location, version]
+      properties:
+        kind: {type: string, enum: [people, companies, jobs, posts]}
+        query: {type: string, minLength: 2, maxLength: 80}
+        location: {type: string, maxLength: 120}
+        version: {type: integer, format: int64, minimum: 0}
+    ReportWrite:
+      type: object
+      required: [postId, category, details]
+      properties:
+        postId: {type: string, format: uuid}
+        category: {type: string, enum: [SPAM, HARASSMENT, MISINFORMATION, OTHER]}
+        details: {type: string, maxLength: 2000}
+    ContentReport:
+      type: object
+      required: [id, postId, category, state, version, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        postId: {type: string, format: uuid}
+        category: {type: string}
+        state: {type: string, enum: [OPEN, REMOVED, DISMISSED]}
+        version: {type: integer, format: int64}
+        createdAt: {type: string, format: date-time}
+    ReportPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ContentReport'}}
+        nextCursor: {type: [string, 'null'], format: uuid}
+    ModerationItem:
+      type: object
+      required: [report, details, postText, postVersion, authorName, unavailable]
+      properties:
+        report: {$ref: '#/components/schemas/ContentReport'}
+        details: {type: string}
+        postText: {type: string}
+        postVersion: {type: integer, format: int64, minimum: 1}
+        authorName: {type: string}
+        unavailable: {type: boolean}
+    ModerationPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ModerationItem'}}
+        nextCursor: {type: [string, 'null'], format: uuid}
+
+    PostDraftWrite:
+      type: object
+      required: [text, audience, version]
+      properties:
+        text: {type: string, maxLength: 3000}
+        audience: {type: string, enum: [ONLY_ME, MEMBERS]}
+        version: {type: integer, format: int64, minimum: 0}
+    PostDraft:
+      type: object
+      required: [id, text, audience, version, published, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        text: {type: string}
+        audience: {type: string, enum: [ONLY_ME, MEMBERS]}
+        version: {type: integer, format: int64}
+        published: {type: boolean}
+        updatedAt: {type: string, format: date-time}
+    PostDraftPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/PostDraft'}
+        nextCursor: {type: [string, 'null'], format: uuid}
+
+    NetworkPrivacy:
+      type: object
+      additionalProperties: false
+      required: [connectionsVisible, version]
+      properties:
+        connectionsVisible: {type: boolean}
+        version: {type: integer, format: int64, minimum: 0}
+    NetworkDiscoveryMember:
+      type: object
+      required: [memberId, name, headline, location, mutualCount]
+      properties:
+        memberId: {type: string, format: uuid}
+        name: {type: string}
+        headline: {type: string}
+        location: {type: string}
+        mutualCount: {type: integer, format: int64, minimum: 0}
+    NetworkDiscoveryPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/NetworkDiscoveryMember'}
+        nextCursor: {type: string, format: uuid, nullable: true}
+
+    DataExport:
+      type: object
+      required: [id, status, createdAt, expiresAt, failure]
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [QUEUED, PROCESSING, READY, FAILED, EXPIRED]}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: [string, 'null'], format: date-time}
+        failure: {type: [string, 'null'], enum: [TOO_LARGE, GENERATION_FAILED, null]}
+    RecruiterAccess:
+      type: object
+      required: [id, organizationId, companyName, memberName, state, version, owned]
+      properties:
+        id: {type: string, format: uuid}
+        organizationId: {type: string, format: uuid}
+        companyName: {type: string}
+        memberName: {type: string}
+        state: {type: string, enum: [PENDING, ACTIVE, DECLINED, REVOKED, LEFT]}
+        version: {type: integer, format: int64, minimum: 1}
+        owned: {type: boolean}
+    RecruiterAccessPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/RecruiterAccess'}
+        nextCursor: {type: [string, 'null'], format: uuid}
+    JobPreferences:
+      type: object
+      required: [query, location, workplace, version]
+      properties:
+        query: {type: string, maxLength: 80}
+        location: {type: string, maxLength: 120}
+        workplace: {type: [string, 'null'], enum: [null, REMOTE, HYBRID, ONSITE]}
+        version: {type: integer, format: int64, minimum: 0}
+    ApplicationHistory:
+      type: object
+      required: [applicationId, version, items]
+      properties:
+        applicationId: {type: string, format: uuid}
+        version: {type: integer, format: int64, minimum: 1}
+        items:
+          type: array
+          maxItems: 3
+          items: {$ref: '#/components/schemas/ApplicationTransition'}
+    ApplicationTransition:
+      type: object
+      required: [version, actorRole, fromStatus, toStatus, createdAt]
+      properties:
+        version: {type: integer, format: int64, minimum: 1}
+        actorRole: {type: string, enum: [APPLICANT, COMPANY_OWNER, RECRUITER]}
+        fromStatus: {type: [string, 'null'], enum: [null, SUBMITTED, REVIEWING]}
+        toStatus: {type: string, enum: [SUBMITTED, REVIEWING, ACCEPTED, REJECTED, WITHDRAWN]}
+        createdAt: {type: string, format: date-time}
+    JobQuestion:
+      type: object
+      required: [id, prompt, required]
+      properties:
+        id: {type: string, format: uuid}
+        prompt: {type: string, minLength: 1, maxLength: 300}
+        required: {type: boolean}
+    JobQuestionForm:
+      type: object
+      required: [version, questions]
+      properties:
+        version: {type: integer, format: int64, minimum: 0}
+        questions:
+          type: array
+          maxItems: 5
+          items: {$ref: '#/components/schemas/JobQuestion'}
+    ApplicationAnswer:
+      type: object
+      required: [questionId, text]
+      properties:
+        questionId: {type: string, format: uuid}
+        text: {type: string, maxLength: 1000}
+    ApplicationAnswerSnapshot:
+      allOf:
+        - {$ref: '#/components/schemas/ApplicationAnswer'}
+        - type: object
+          required: [prompt, required]
+          properties:
+            prompt: {type: string}
+            required: {type: boolean}
+    ResumeSubmission:
+      type: object
+      required: [fileName, text]
+      properties:
+        fileName: {type: string, minLength: 5, maxLength: 120, description: Filename ending in .txt; no path separators or control characters. Not stored or echoed.}
+        text: {type: string, minLength: 1, maxLength: 20480, description: Nonblank valid Unicode text; UTF-8 byte limit 20480 applies server-side.}
+    JobApplication:
+      type: object
+      required: [id, jobId, jobTitle, companyName, applicantName, applicantHeadline, statement, status, version, mine, createdAt, hasResume, questionVersion, answers]
+      properties:
+        id: {type: string, format: uuid}
+        jobId: {type: string, format: uuid}
+        jobTitle: {type: string}
+        companyName: {type: string}
+        applicantName: {type: string}
+        applicantHeadline: {type: string}
+        hasResume: {type: boolean}
+        questionVersion: {type: integer, format: int64, minimum: 0}
+        answers:
+          type: array
+          maxItems: 5
+          items: {$ref: '#/components/schemas/ApplicationAnswerSnapshot'}
+        statement: {type: string}
+        status: {type: string, enum: [SUBMITTED, REVIEWING, ACCEPTED, REJECTED, WITHDRAWN]}
+        version: {type: integer, format: int64, minimum: 1}
+        mine: {type: boolean}
+        createdAt: {type: string, format: date-time}
+    ApplicationPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/JobApplication'}
+        nextCursor: {type: [string, 'null'], format: uuid}
+    JobWrite:
+      type: object
+      required: [organizationId, title, location, description, workplace, status, version]
+      properties:
+        organizationId: {type: string, format: uuid}
+        title: {type: string, minLength: 1, maxLength: 160}
+        location: {type: string, minLength: 1, maxLength: 120}
+        description: {type: string, minLength: 1, maxLength: 10000}
+        workplace: {type: string, enum: [REMOTE, HYBRID, ONSITE]}
+        status: {type: string, enum: [OPEN, CLOSED]}
+        version: {type: integer, format: int64, minimum: 0}
+    Job:
+      allOf:
+        - {$ref: '#/components/schemas/JobWrite'}
+        - type: object
+          required: [id, companyName, owned, saved, canManage]
+          properties:
+            id: {type: string, format: uuid}
+            companyName: {type: string}
+            owned: {type: boolean}
+            saved: {type: boolean}
+            canManage: {type: boolean}
+    JobPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Job'}
+        nextCursor: {type: [string, 'null'], format: uuid}
+    OrganizationWrite:
+      type: object
+      required: [name, industry, location, about, version]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 160}
+        industry: {type: string, maxLength: 120}
+        location: {type: string, maxLength: 120}
+        about: {type: string, maxLength: 3000}
+        version: {type: integer, format: int64, minimum: 0}
+    Organization:
+      allOf:
+        - {$ref: '#/components/schemas/OrganizationWrite'}
+        - type: object
+          required: [id, owned, following, followerCount, canRecruit]
+          properties:
+            id: {type: string, format: uuid}
+            owned: {type: boolean}
+            following: {type: boolean}
+            followerCount: {type: integer, format: int64, minimum: 0}
+            canRecruit: {type: boolean}
+    OrganizationPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Organization'}
+        nextCursor: {type: [string, 'null'], format: uuid}
+    ConversationPreference:
+      type: object
+      required: [starred, archived, version]
+      properties:
+        starred: {type: boolean}
+        archived: {type: boolean}
+        version: {type: integer, format: int64, minimum: 0}
+    Conversation:
+      type: object
+      required: [id, memberId, name, unreadCount, canSend, preferences]
+      properties:
+        id: {type: string, format: uuid}
+        memberId: {type: string, format: uuid}
+        name: {type: string}
+        unreadCount: {type: integer, format: int64}
+        canSend: {type: boolean}
+        preferences: {$ref: '#/components/schemas/ConversationPreference'}
+    ConversationPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Conversation'}
+        nextCursor: {type: [string, 'null']}
+    Message:
+      type: object
+      required: [id, sequence, text, owned, read, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        sequence: {type: integer, format: int64}
+        text: {type: string}
+        owned: {type: boolean}
+        read: {type: boolean}
+        createdAt: {type: string, format: date-time}
+    MessagePage:
+      type: object
+      required: [items, nextCursor, latestSequence, recipientReadSequence, canSend, memberId, name, preferences]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Message'}
+        nextCursor: {type: [string, 'null']}
+        latestSequence: {type: integer, format: int64}
+        recipientReadSequence: {type: integer, format: int64}
+        canSend: {type: boolean}
+        preferences: {$ref: '#/components/schemas/ConversationPreference'}
+        memberId: {type: string, format: uuid}
+        name: {type: string}
+    Discovery:
+      type: object
+      required: [discoverable, version]
+      properties:
+        discoverable: {type: boolean}
+        version: {type: integer, format: int64, minimum: 0}
+    PersonResult:
+      type: object
+      required: [memberId, name, headline, location]
+      properties:
+        memberId: {type: string, format: uuid}
+        name: {type: string}
+        headline: {type: string}
+        location: {type: string}
+    PeoplePage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/PersonResult'}
+        nextCursor: {type: [string, 'null'], format: uuid}
+    FollowState:
+      type: object
+      required: [following]
+      properties:
+        following: {type: boolean}
+    FollowedMember:
+      type: object
+      required: [memberId, name, visible]
+      properties:
+        memberId: {type: string, format: uuid}
+        name: {type: string}
+        visible: {type: boolean}
+    FollowingPage:
+      type: object
+      required: [items, nextCursor, total]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/FollowedMember'}
+        nextCursor: {type: [string, 'null']}
+        total: {type: integer, format: int64}
+    NotificationPreference:
+      type: object
+      required: [enabled, version]
+      properties:
+        enabled: {type: boolean}
+        jobs: {type: boolean, description: Always returned; optional on writes for compatibility.}
+        version: {type: integer, format: int64, minimum: 0}
+    Notification:
+      type: object
+      required: [id, actorName, createdAt, read, kind, applicationId, jobId, jobTitle, applicationStatus, applicationVersion]
+      properties:
+        id: {type: string, format: uuid}
+        actorName: {type: string, description: Connection actor name or application company name.}
+        createdAt: {type: string, format: date-time}
+        read: {type: boolean}
+        kind: {type: string, enum: [CONNECTION_ACCEPTED, APPLICATION_UPDATE]}
+        applicationId: {type: [string, 'null'], format: uuid}
+        jobId: {type: [string, 'null'], format: uuid}
+        jobTitle: {type: [string, 'null']}
+        applicationStatus: {type: [string, 'null'], enum: [null, SUBMITTED, REVIEWING, ACCEPTED, REJECTED, WITHDRAWN]}
+        applicationVersion: {type: [integer, 'null'], format: int64, minimum: 1}
+    NotificationPage:
+      type: object
+      required: [items, nextCursor, unreadCount, readThrough]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Notification'}
+        nextCursor: {type: [string, 'null']}
+        readThrough: {type: [string, 'null'], description: Highest visible sequence across all categories; boundary for mark-all-read}
+        unreadCount: {type: integer, format: int64, minimum: 0}
+    SavedPostWrite:
+      type: object
+      required: [saved]
+      properties:
+        saved: {type: boolean}
+    CommentWrite:
+      type: object
+      required: [text]
+      properties:
+        parentId: {type: [string, 'null'], format: uuid, description: Omit for a top-level comment}
+        text: {type: string, minLength: 1, maxLength: 2000}
+    Comment:
+      type: object
+      required: [id, parentId, authorName, text, createdAt, owned]
+      properties:
+        id: {type: string, format: uuid}
+        parentId: {type: [string, 'null'], format: uuid}
+        authorName: {type: string}
+        text: {type: string}
+        createdAt: {type: string, format: date-time}
+        owned: {type: boolean}
+    CommentPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Comment'}
+        nextCursor: {type: [string, 'null']}
+    ReactionWrite:
+      type: object
+      required: [liked]
+      properties:
+        liked: {type: boolean}
+    PostWrite:
+      type: object
+      required: [text, audience, version]
+      properties:
+        text: {type: string, minLength: 1, maxLength: 3000}
+        audience: {type: string, enum: [ONLY_ME, MEMBERS]}
+        version: {type: integer, format: int64, minimum: 0}
+    Post:
+      type: object
+      required: [id, authorName, authorId, text, audience, version, createdAt, edited, owned, reactionCount, liked, saved]
+      properties:
+        id: {type: string, format: uuid}
+        authorName: {type: string}
+        authorId: {type: string, format: uuid}
+        text: {type: string}
+        audience: {type: string, enum: [ONLY_ME, MEMBERS]}
+        version: {type: integer, format: int64}
+        createdAt: {type: string, format: date-time}
+        edited: {type: boolean}
+        owned: {type: boolean}
+        reactionCount: {type: integer, format: int64, minimum: 0}
+        liked: {type: boolean}
+        saved: {type: boolean}
+    FeedPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Post'}
+        nextCursor: {type: [string, 'null']}
+    Experience:
+      type: object
+      required: [id, title, organization, startDate, endDate, description, version]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string, minLength: 1, maxLength: 120}
+        organization: {type: string, minLength: 1, maxLength: 160}
+        startDate: {type: string, format: date}
+        endDate: {type: [string, 'null'], format: date}
+        description: {type: string, maxLength: 2600}
+        version: {type: integer, format: int64, minimum: 0}
+    Education:
+      type: object
+      required: [id, degree, institution, startDate, endDate, description, fieldOfStudy, version]
+      properties:
+        id: {type: string, format: uuid}
+        degree: {type: string, minLength: 1, maxLength: 120}
+        institution: {type: string, minLength: 1, maxLength: 160}
+        startDate: {type: string, format: date}
+        endDate: {type: [string, 'null'], format: date}
+        fieldOfStudy: {type: string, maxLength: 160}
+        description: {type: string, maxLength: 2600}
+        version: {type: integer, format: int64, minimum: 0}
+    Project:
+      type: object
+      required: [id, title, organization, startDate, endDate, description, associatedSkills, version]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string, minLength: 1, maxLength: 120}
+        organization: {type: string, maxLength: 160}
+        startDate: {type: string, format: date}
+        endDate: {type: [string, 'null'], format: date}
+        associatedSkills: {type: string, maxLength: 500, description: Comma-separated skill names}
+        description: {type: string, maxLength: 2600}
+        version: {type: integer, format: int64, minimum: 0}
+    Certification:
+      type: object
+      required: [id, name, issuer, issueDate, expiryDate, credentialUrl, credentialId, version]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 120}
+        issuer: {type: string, minLength: 1, maxLength: 160}
+        issueDate: {type: string, format: date}
+        expiryDate: {type: [string, 'null'], format: date}
+        credentialId: {type: string, maxLength: 160}
+        credentialUrl: {type: string, maxLength: 2048}
+        version: {type: integer, format: int64, minimum: 0}
+    Skill:
+      type: object
+      required: [id, name, version]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 80}
+        version: {type: integer, format: int64, minimum: 0}
+    Language:
+      type: object
+      required: [id, name, proficiency, version]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 80}
+        proficiency:
+          type: string
+          enum: [ELEMENTARY, LIMITED_WORKING, PROFESSIONAL_WORKING, FULL_PROFESSIONAL, NATIVE_BILINGUAL]
+        version: {type: integer, format: int64, minimum: 0}
+    Preferences:
+      type: object
+      required: [theme, version]
+      properties:
+        theme: {type: string, enum: [system, light, dark]}
+        version: {type: integer, format: int64, minimum: 0}
+    VisibilityUpdate:
+      type: object
+      required: [memberVisible, version]
+      properties:
+        memberVisible: {type: boolean}
+        publicVisible: {type: boolean, description: Explicit internet-public opt-in. Omission preserves current value.}
+        version: {type: integer, format: int64, minimum: 0}
+    Visibility:
+      allOf:
+        - {$ref: '#/components/schemas/VisibilityUpdate'}
+        - type: object
+          required: [publicId, publicVisible]
+          properties:
+            publicId: {type: string, format: uuid}
+    AccountSession:
+      type: object
+      required: [id, createdAt, lastActiveAt, expiresAt, current]
+      properties:
+        id: {type: string, format: uuid}
+        createdAt: {type: string, format: date-time}
+        lastActiveAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time, description: Earlier of idle expiry and absolute session deadline}
+        current: {type: boolean}
+    MemberSummary:
+      type: object
+      required: [name, headline, location, about]
+      properties:
+        name: {type: string}
+        headline: {type: string}
+        location: {type: string}
+        about: {type: string}
+    Connection:
+      type: object
+      required: [id, name, state, incoming, version]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        state: {type: string, enum: [PENDING, ACCEPTED]}
+        incoming: {type: boolean}
+        version: {type: integer, format: int64}
+    Block:
+      type: object
+      required: [memberId, name]
+      properties:
+        memberId: {type: string, format: uuid}
+        name: {type: string}
+    Profile:
+      type: object
+      required: [name, headline, location, about, version]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        headline: {type: string, maxLength: 220}
+        location: {type: string, maxLength: 120}
+        about: {type: string, maxLength: 2600}
+        version: {type: integer, format: int64, minimum: 0}

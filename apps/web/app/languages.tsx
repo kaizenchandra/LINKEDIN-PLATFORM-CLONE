@@ -1,0 +1,11 @@
+'use client';
+import {FormEvent} from 'react';
+import {useProfileSection} from './use-profile-section';
+import type {components} from './api-schema';
+type Language=components['schemas']['Language'];
+const levels:Record<Language['proficiency'],string>={ELEMENTARY:'Elementary',LIMITED_WORKING:'Limited working',PROFESSIONAL_WORKING:'Professional working',FULL_PROFESSIONAL:'Full professional',NATIVE_BILINGUAL:'Native or bilingual'};
+export default function Languages(){
+ const {entries,draft,setDraft,message,setMessage,busy,load,mutate}=useProfileSection<Language>('languages','Language');
+ function save(event:FormEvent){event.preventDefault();if(draft)void mutate('PUT','/api/v1/me/languages',draft);}
+ return <section aria-label="Languages" className="experience"><h2>Languages</h2><p role="status">{message}</p>{draft?<form onSubmit={save}><label>Language name<input required maxLength={80} value={draft.name} onChange={event=>setDraft({...draft,name:event.target.value})}/></label><label>Proficiency<select value={draft.proficiency} onChange={event=>setDraft({...draft,proficiency:event.target.value as Language['proficiency']})}>{Object.entries(levels).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><button disabled={busy}>Save language</button>{' '}<button type="button" disabled={busy} onClick={()=>{if(window.confirm('Discard unsaved language changes?'))setDraft(null)}}>Cancel</button></form>:<><button disabled={busy} onClick={()=>setDraft({id:crypto.randomUUID(),name:'',proficiency:'PROFESSIONAL_WORKING',version:0})}>Add language</button>{entries.length===0&&<p>Add the languages you use and your proficiency.</p>}<ul>{entries.map(language=><li key={language.id}><strong>{language.name}</strong><span>{levels[language.proficiency]}</span>{' '}<button disabled={busy} onClick={()=>setDraft({...language})}>Edit {language.name}</button>{' '}<button disabled={busy} onClick={()=>{if(window.confirm(`Remove ${language.name}?`))void mutate('DELETE',`/api/v1/me/languages/${language.id}?version=${language.version}`)}}>Remove {language.name}</button></li>)}</ul><button disabled={busy} onClick={()=>load().catch(error=>setMessage(error.message))}>Reload languages</button></>}</section>;
+}
