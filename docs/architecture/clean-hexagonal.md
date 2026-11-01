@@ -4,7 +4,7 @@
 
 Keep the current modular-monolith deployment and PostgreSQL transactions. Migrate by bounded workflow, preserving HTTP contracts, authentication, SQL visibility rules and integration tests. Moving all classes into new folders would not, by itself, separate business policy from infrastructure.
 
-Migrated workflows are private search history, account appearance preferences, profile visibility/public summaries, profile initialization/intro updates, experience/education/certification/project/skill/language CRUD, network invitations/transitions/following/blocking/discovery/privacy, posts/feed/drafts/comments/replies, session management/provider revocation/security time policies, reporting/moderation, notification management, people discovery, job preferences and organization management. Other business controllers still use the existing implementation. This is a working architecture migration, not a claim that the entire backend already meets these boundaries.
+Migrated workflows are private search history, account appearance preferences, profile visibility/public summaries, profile initialization/intro updates, experience/education/certification/project/skill/language CRUD, network invitations/transitions/following/blocking/discovery/privacy, posts/feed/drafts/comments/replies, session management/provider revocation/security time policies, reporting/moderation, notification management, people discovery, job preferences, organization management, job lifecycle/search/bookmark workflows, recruiter delegation and job question management. Other business controllers still use the existing implementation. This is a working architecture migration, not a claim that the entire backend already meets these boundaries.
 
 ```mermaid
 flowchart LR
@@ -39,10 +39,14 @@ Arrows to ports represent source dependencies; at runtime the application calls 
 | `com.meridian.content.domain/application/adapter` | Post/draft/comment models, publication and interaction use cases, persistence/visibility ports, HTTP/JDBC adapters |
 | `com.meridian.identity.domain/application/adapter` | Time/return policies, session and provider-revocation use cases, JDBC ports/adapters, OIDC/servlet adapters and composition |
 | `com.meridian.moderation.domain/application/adapter` | Reporting/review values and policy, moderation use cases, persistence port and HTTP/JDBC adapters |
-| `com.meridian.notifications.domain/application/adapter` | Notification views and read-boundary policy, management use cases, persistence/realtime ports and HTTP/JDBC adapters |
+| `com.meridian.notifications.domain/application/adapter` | Notification views, read-boundary/audience policies, management/projection use cases, persistence/realtime ports and HTTP/JDBC/event adapters |
 | `com.meridian.peoplesearch.domain/application/adapter` | Search criteria, discovery consent use cases, privacy-filtered query port and HTTP/JDBC adapters |
-| `com.meridian.jobs.domain/application/adapter` | Shared workplace value and job-preference use cases/adapters; other jobs APIs remain legacy |
+| `com.meridian.jobs.domain/application/adapter` | Workplace/job values, preferences, job question management and job lifecycle/search/bookmark use cases, persistence ports and HTTP/JDBC adapters |
+| `com.meridian.recruiting.domain/application/adapter` | Recruiter membership state transitions, owner/member use cases, persistence/signaling ports and HTTP/JDBC adapters |
 | `com.meridian.organizations.domain/application/adapter` | Company values, ownership/retry/follow use cases, persistence port and HTTP/JDBC adapters |
+| `com.meridian.realtime.adapter` | WebSocket transport, authenticated handshake, bounded delivery and immutable after-commit refresh events; session checks call identity use cases |
+| `com.meridian.applications.domain/application/adapter` | Application response values, submission/list/history/resume/status use cases, answer/resume policies, persistence/signal ports and HTTP/JDBC adapters |
+| `com.meridian.events.domain/application/adapter` | Outbox values and publication use case, persistence/publishing/metrics ports, JDBC/Kafka adapters and worker configuration |
 | `com.meridian.shared.application` | Transaction port and transport-independent failure reasons |
 | `com.meridian.shared.adapter` | Spring transaction implementation, HTTP failure translation and bean composition |
 | `com.meridian` | Existing entry point, security and not-yet-migrated workflows; retention scheduler delegates through the new input port |
@@ -76,8 +80,8 @@ The guard applies to migrated packages. It does not certify legacy controllers a
 | Profile/media | Photo orchestration, export snapshot access; intro and six section controllers are migrated | Existing profile/photo/export tests, locking/version behavior, S3 failure cleanup |
 | Network extensions | Current invitation/follow/block/discovery APIs migrated; future ranked suggestions/rate limits remain product backlog | Concurrent invitation transitions, privacy, outbox atomicity |
 | Content extensions | Existing posts/drafts/comments and moderation migrated; future content/media workflows remain product backlog | Ownership/visibility, atomic draft publication, report audit |
-| Messaging/notification delivery | Conversation state, ordering/read receipts, projection and realtime delivery; notification management APIs migrated | Idempotent sends, reconnect, cross-user isolation, redelivery |
-| Organizations/jobs | Company ownership, recruiter access, application questions and lifecycle | Delegation, immutable question snapshots, duplicate prevention |
+| Messaging/notification delivery | Conversation state and ordering/read receipts; notification management/projection and realtime transport adapter boundaries migrated | Idempotent sends, reconnect, cross-user isolation, redelivery |
+| Recruiting/applications | Company management, job lifecycle and recruiter delegation migrated; existing application submission/review and answer snapshot orchestration migrated; future application capabilities remain product backlog | Delegation, immutable question snapshots, duplicate prevention |
 | Identity/data lifecycle | Session/provider revocation migrated; export orchestration and future OTP/deletion workflows remain | Real Keycloak lifecycle, rollback/retries, retention and revocation |
 | Operations | Event workers, external storage, telemetry boundaries | Outbox/DLQ/recovery tests and runtime failure drills |
 
@@ -232,3 +236,177 @@ Application transactions retain initialized-profile requirements and owner-row l
 `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test` passed **171 tests**, zero failures/errors/skips. The backend container was rebuilt and passed readiness. From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test` passed, including **all 34 real-service browser journeys** against the rebuilt backend. Company editing/following, jobs and recruiting compatibility were included.
 
 No public API, database migration or dependency changes were required. Recruiting delegation, job lifecycle, messaging and operational adapter migration remain outstanding.
+
+
+## Job lifecycle migration checkpoint
+
+Job publication, edits, closing/reopening, discovery, detail reads and saved/dismissed markers now use `jobs.domain` values, `JobUseCases`, `JobStore`, `JobService` and HTTP/JDBC adapters. The Spring composition root supplies the transaction port. The root `JobController` was removed; its request validation and wire fields remain in the HTTP adapter. Public paths, response schemas, no-store headers and marker 204 responses are unchanged.
+
+The application layer owns validation, organization authorization sequencing, immutable company assignment, creation retry matching and optimistic-version conflicts. The JDBC adapter preserves organization/job row locks and existing SQL filters, cursor order, recruiter projection and marker uniqueness. Publication and marker mutations retain their transaction boundaries. Job preference matching and dismissed-job exclusion remain authoritative database queries. Recruiter delegation and application/question orchestration still require extraction; shared recruiter SQL remains an explicitly outer-layer dependency between adapters.
+
+Three new `JobUseCasesTest` cases cover unauthorized recruiting writes, open-only creation/company mismatch and creation replay/idempotent marker removal. Existing database and HTTP integration tests continue exercising publication, filtering, concurrent versions, bookmarks and recruiting compatibility. Framework-free compilation guards cover the new domain/application classes.
+
+Executed verification:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **174 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend and successful readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test`: contract consistency, strict TypeScript and **34 real-service browser journeys passed**.
+
+No API contract, database migration or dependency change was required. No AWS deployment occurred. Messaging, notification projection/delivery, recruiting/applications/questions, photo/export orchestration and operational adapters remain migration work.
+
+
+## Recruiter delegation migration checkpoint
+
+Recruiter invitations, access listing and ACCEPT/DECLINE/LEAVE/REVOKE transitions now use `recruiting.domain`, `RecruiterUseCases`, `RecruiterStore` and `RecruiterSignals`. `RecruiterService` owns authorization sequencing, accepted/unblocked connection checks, capacity limits, invitation replay and membership version checks. HTTP validation and no-store responses remain in the adapter; SQL and locks remain in `JdbcRecruiterStore`. The former root controller was removed. The composition root supplies the store, transaction and signal ports.
+
+Invitation writes retain organization-then-member-pair locking. Membership changes retain organization-then-membership locking. State updates, audit writes and signal registration execute in the same transaction. `RecruiterRealtimeAdapter` bridges to the existing after-commit listener and carries only affected subjects. At this checkpoint it remained a root-package adapter because the legacy event was package-private; the subsequent realtime checkpoint below removes this constraint.
+
+The existing recruiting integration assertions remain unchanged, including immediate loss of job/application access after revocation, CSRF enforcement, creation retries, duplicate active invitations, stale changes and self-review restrictions. Five new core tests cover owner authorization, replay without duplicate writes/signals, blocked connections/capacity, action/version checks and terminal-state transitions. Framework-independent compilation guards include the new core packages.
+
+Application submission/review, question snapshots, messaging, notification projection/delivery, photo/export orchestration and operational adapters still require migration. Existing legacy recruiting helpers remain for application/question workflows. No API schema, database migration or dependency change was introduced.
+
+Executed verification for recruiter delegation:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **179 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: backend rebuilt and ready.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test`: contract consistency, strict TypeScript and **all 34 real-service browser journeys passed** against the rebuilt backend.
+
+No AWS deployment or production-readiness claim is made. This verification covers the current incremental migration.
+
+
+## Realtime adapter boundary checkpoint
+
+`RecruiterRealtimeAdapter`, `NetworkRealtimeAdapter` and `NotificationRealtimeAdapter` now live in their owning context adapter packages. They implement the existing application signal ports. The shared `RealtimeChanged`, `RealtimeHandler` and `RealtimeConfiguration` live in `realtime.adapter`, removing the root-package visibility constraint described in the prior checkpoint. This is transport infrastructure, not a new business domain or independently deployed service.
+
+The WebSocket adapter calls the identity `SessionUseCases` input port directly; the pass-through `identity.adapter.SessionAccess` class was removed. Legacy messaging/application controllers and notification projection explicitly import the shared adapter event until those workflows migrate. The event remains a local invalidation signal, not a durable domain event or Kafka contract.
+
+The existing `/api/v1/realtime` path, exact origin checks, authenticated subject/session binding, refresh JSON, connection limits, bounded executor, send limits, periodic session revocation checks and shutdown behavior are preserved. The listener now explicitly declares AFTER_COMMIT with fallback disabled. Audience sets are defensively copied so callers cannot change queued recipients. Tests cover committed versus rolled-back/nontransactional events, immutable audience, session-store failure, remote revocation and subject isolation.
+
+Application/question workflows, messaging use cases, notification projections and operational workers remain migration work. No public API, dependency or database migration changed.
+
+Executed verification for the realtime boundary migration:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **181 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test`: contract consistency, strict TypeScript and **34 real-service browser journeys passed** against the rebuilt backend.
+
+No AWS deployment occurred. Distributed realtime scaling and the remaining legacy workflows are not certified by this incremental verification.
+
+
+## Job question management migration checkpoint
+
+The existing GET/PUT `/api/v1/jobs/{jobId}/questions` endpoints now delegate through `JobQuestionUseCases` to `JobQuestionService`, using `JobQuestionStore` and the shared transaction port. `JobQuestions` is a framework-free domain model with question limits, duplicate-ID detection, text validation and normalization. The HTTP adapter retains Jakarta request validation and no-store responses; `JdbcJobQuestionStore` owns JSON persistence and SQL.
+
+Save retains job lookup, organization lock, recruiter authorization, job lock, version check, normalization and write ordering. First save inserts revision one; later saves increment the existing revision. Reload occurs inside the write transaction. Missing jobs/companies, forbidden recruiter access and stale revisions preserve their HTTP outcomes.
+
+Legacy application submission still owns answer validation and immutable submitted snapshots. Its `ApplicationQuestions.load` bridge delegates to the new JDBC reader and maps to the existing submission DTOs, avoiding two database readers during incremental migration. The old root question controller and unused normalization implementation were removed. Application submission/review and answer snapshot orchestration remain outstanding, along with messaging, notification projection, media/export and workers.
+
+Four new `JobQuestionUseCasesTest` tests cover missing/unauthorized access, stale revisions, lock/write ordering with persisted revision, and invalid question sets. Existing integration and browser assertions continue checking stale applications and preserved answer snapshots. No public contract, migration or dependency changed.
+
+Executed verification for job question management:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **185 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test`: contract consistency, strict TypeScript and **all 34 real-service browser journeys passed** against the rebuilt backend.
+
+No AWS deployment occurred. This verifies the question-management migration, not completion of application lifecycle migration or overall production readiness.
+
+
+## Application read-side migration checkpoint
+
+Application lists, private status history and resume downloads now use `ApplicationReadUseCases`, `ApplicationReadService` and `ApplicationReadStore`. Framework-free response records live in `applications.domain`; HTTP/JDBC implementations live in `applications.adapter`. List pagination is handled in the application service, while the database adapter applies caller authorization and filters before the 21-row cursor window. History remains one SQL statement so its current version and transitions come from the same statement snapshot.
+
+The adapter retains applicant/owner/active-recruiter visibility predicates, immediate effects of revocation, existing ordering and actor-role projection. Missing and unauthorized history/resume reads retain identical 404 behavior. Resume UTF-8 encoding, attachment filename, no-store, nosniff and restrictive CSP headers are unchanged.
+
+The legacy write controller retains its submission/status transactions, locks, audit/outbox writes and realtime registration. Its receipts use the same JDBC response reader and domain response model as lists, inside the original transaction. This deliberate outer-layer bridge avoids independent response queries while mutation use cases remain to be migrated. Answer snapshots in responses are mapped to framework-free values; persisted JSON remains unchanged.
+
+Three new `ApplicationReadUseCasesTest` cases verify unavailable private resources, cursor boundaries/filter forwarding and authoritative history version/actor roles. Existing integration/browser tests cover application submission, review, resume access, recruiter revocation and immutable answers. No API schema, migration or dependency changed. Submission/review, messaging, notification projection, media/export and workers remain migration work.
+
+Executed verification for the application read-side migration:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **188 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test`: contract consistency, strict TypeScript and **all 34 real-service browser journeys passed** against the rebuilt backend.
+
+No AWS deployment occurred. Application mutations and remaining legacy workflows are not marked migrated by these results.
+
+
+## Application status-transition migration checkpoint
+
+PUT `/api/v1/applications/{id}/status` now delegates to `ApplicationStatusUseCases` and `ApplicationStatusService`. `ApplicationStatus` contains the actor and transition policies; the application layer checks revision and orchestrates `ApplicationStatusStore`, the transaction port and `ApplicationSignals`. HTTP validation, error translation and no-store responses remain in the inbound adapter. `JdbcApplicationStatusStore` retains the original SQL predicates and locks. `ApplicationRealtimeAdapter` publishes the shared after-commit invalidation event.
+
+The service retains caller-filtered organization lookup, organization locking, caller-filtered application locking, actor checks and version checks in order. This revalidates recruiter access after acquiring the organization lock. Status/version, audit and outbox writes and signal registration share one transaction; the persisted response is read before commit. Applicants can withdraw submitted/reviewing applications; reviewers can move submitted to reviewing/rejected or reviewing to accepted/rejected. Terminal states remain terminal, and an applicant with recruiter privileges cannot review their own application.
+
+Four core tests cover access revalidation, wrong actors/stale versions, audit/outbox failure suppression and the full transition matrix. A new PostgreSQL integration test deliberately fails after audit/outbox persistence and verifies rollback of state/version/audit/outbox and absence of a signal. Existing application/recruiter integration assertions remain unchanged. No API schema, migration or dependency change was needed.
+
+Submission, answer validation/snapshot orchestration, messaging, notification projection, media/export and workers remain migration work. The legacy submission controller retains its existing transactional implementation.
+
+Executed verification for status transitions:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **193 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs` and `npm run typecheck`: passed.
+- `npx playwright test`: **31 passed, three failed**. Identity and unified-search failed waiting for navigation after identity-provider form submission; people-search timed out waiting for a result. Application/status and recruiting journeys passed.
+- `npx playwright test --last-failed --workers=1`: **all three passed**, without code changes. All 34 journeys therefore passed across the initial run and targeted retry, not in a single clean run. The timing failures were not reproduced and their root cause remains unconfirmed; browser-suite reliability remains an operational/test limitation.
+
+No AWS deployment occurred. Submission and remaining legacy workflows are still tracked separately.
+
+
+## Application submission migration checkpoint
+
+PUT `/api/v1/jobs/{jobId}/application` now delegates to `ApplicationSubmissionUseCases` and `ApplicationSubmissionService`, with `ApplicationSubmissionStore` and the existing transaction/signal ports. Plain Java `Submission` values own resume and answer validation, original question snapshot reconstruction and supplied-answer normalization. HTTP request annotations remain on the adapter. The shared error translator adds a transport-independent UNPROCESSABLE reason to preserve the existing 422 outcome for missing required answers.
+
+The application layer retains organization/job locking, replay comparison before current-job eligibility checks, question-version checks, company/recruiter exclusion and profile initialization requirements. A replay compares the original statement, resume body and original question/answer snapshots; changed submitted content remains a conflict. Successful creation writes the application, optional resume, audit and outbox atomically and registers realtime invalidation before reading the persisted receipt in the same transaction.
+
+`JdbcApplicationSubmissionStore` shares the existing question reader, receipt reader and organization lock/audience adapter implementations. No core package imports adapters or Spring. Root `ApplicationController`, `ApplicationQuestions`, `ResumeText` and `RecruitingAccess` were removed. Test fixtures now use domain records and a test-only JSON encoder; their HTTP assertions remain unchanged.
+
+Four core tests cover closed-job replay using original snapshots, distinct stale-form/missing-answer errors, invalid answer sets and UTF-8 resume limits. A PostgreSQL integration test fails after audit/outbox writes and verifies application/resume/audit/outbox rollback and no signal. Existing submission, concurrency, recruiter access and snapshot integration checks remain in the suite.
+
+No API schema, database migration or dependency change was required. Messaging, notification projection, media/export and operational workers remain migration work; this is not overall production readiness.
+
+Executed verification for application submission:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **198 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs` and `npm run typecheck`: passed.
+- `npx playwright test --workers=2`: **all 34 real-service journeys passed**, no retries. This reduced-concurrency run does not establish a root cause or permanent fix for the prior higher-concurrency timing failures.
+
+No AWS deployment occurred. Existing application submission/read/status workflows are migrated; unimplemented product features and remaining architectural contexts stay in the backlog.
+
+
+## Notification projection migration checkpoint
+
+Connection/application notification projection now uses `NotificationProjectionUseCases`, `NotificationProjectionService`, `NotificationProjectionStore` and the existing notification signal and transaction ports. `NotificationSource` selects the application recipient from authoritative audit status. The inbound `NotificationProjector` validates versioned integration envelopes before calling the application layer. Event envelopes moved to `notifications.adapter`; topic names, JSON fields, schema versions and broker validation remain unchanged.
+
+`JdbcNotificationProjectionStore` retains the existing conditional connection insert, blocking checks, notification preferences, audit/outbox source lookup and unique constraints. Connection events are claimed before eligibility projection. Application events are resolved from matching outbox/audit data before claiming, so missing/mismatched source events remain retryable. Opted-out application events are consumed without later backfill. Only a newly inserted notification registers a realtime signal.
+
+Deduplication, source resolution, preferences and inserts execute within the transaction port; realtime delivery remains after commit. Four core tests cover missing sources, opt-out, redelivery and audience/insert outcomes. A new PostgreSQL test fails after notification insertion, verifies deduplication and notification rollback, and verifies a successful single-effect replay. Existing Kafka, privacy and browser integration checks are retained.
+
+Root projector/event classes were removed; the still-legacy Kafka worker imports the inbound adapters explicitly. Kafka polling/outbox publication/retry lifecycle, messaging, media/export and other operational workers remain migration work. No public API, event schema, migration or dependency changed.
+
+Executed verification for notification projection:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **203 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test --workers=2`: contract consistency, strict TypeScript and **all 34 real-service journeys passed**, no retries.
+
+No AWS deployment occurred. Remaining Kafka worker lifecycle, messaging and media/export migration is not covered by a completion claim.
+
+
+## Outbox publication migration checkpoint
+
+Outbox publication now runs through framework-free `OutboxUseCases`/`OutboxService`, `OutboxStore`, `OutboxPublisher`, `OutboxMetrics` and the shared transaction port. `JdbcOutboxStore` retains the existing 20-row SKIP LOCKED selection, due-time filtering and per-application version ordering. `KafkaEventTransport` maps outbox values to the same versioned envelopes, topics and partition keys, and awaits broker acknowledgement with the existing timeouts and producer settings.
+
+Publication remains inside the database transaction. A successful send is followed by the published marker and metric; a failed send schedules the original bounded exponential SQL retry with jitter and stops the batch. Failure to persist retry state escapes for transaction rollback. This remains at-least-once delivery: broker acknowledgement followed by failed database commit can redeliver, and projection consumers retain deduplication.
+
+The worker moved into `events.adapter` and delegates publication to the use case. Its consumer offset commit/seek recovery, strict envelope checks, application DLQ redaction, polling settings and topic initialization remain unchanged infrastructure code. Producer ownership moved to a dedicated transport bean; the worker closes its consumer, and Spring destroys dependent worker beans before closing the transport. Existing metrics names and pending-backlog gauge are retained. Consumer orchestration extraction remains separate migration work.
+
+Three new `OutboxUseCasesTest` tests cover transactional acknowledgement/marker ordering, failed-send batch stopping, and retry-persistence failure propagation. Existing real Kafka/PostgreSQL tests cover broker failure, replay, application ordering and DLQ behavior. No API/event schema, migration or dependency changed. Messaging, media/export and remaining worker orchestration remain outstanding.
+
+Executed verification for outbox publication:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -q -f apps/backend/pom.xml clean test`: **206 tests**, zero failures, errors or skips.
+- `docker compose --ansi never --progress plain --env-file .env -f infrastructure/local/compose.yml -f infrastructure/local/compose.media.yml --profile app --profile observability up -d --build --wait --wait-timeout 180 backend`: rebuilt backend passed readiness.
+- From `apps/web`, `node check-contract.mjs`, `npm run typecheck` and `npx playwright test --workers=2`: contract consistency, strict TypeScript and **all 34 real-service journeys passed**, no retries.
+
+No AWS deployment occurred. Consumer processing orchestration and remaining legacy workflows remain tracked separately.

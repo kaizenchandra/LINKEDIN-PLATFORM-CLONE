@@ -4,6 +4,7 @@ import com.meridian.account.application.*;
 import com.meridian.searchhistory.application.*;
 import com.meridian.profilesections.application.*;
 import java.time.Clock;
+import com.meridian.recruiting.application.*;
 import com.meridian.organizations.application.*;
 import com.meridian.peoplesearch.application.*;
 import com.meridian.jobs.application.*;
@@ -17,6 +18,12 @@ import org.springframework.context.annotation.Configuration;
 /** Composition root: only outer code knows concrete application implementations. */
 @Configuration
 public class UseCaseConfiguration {
+ @Bean NotificationProjectionUseCases notificationProjections(NotificationProjectionStore store,NotificationSignals signals,Transactions transactions){return new NotificationProjectionService(store,signals,transactions);}
+ @Bean com.meridian.applications.application.ApplicationSubmissionUseCases applicationSubmissions(com.meridian.applications.application.ApplicationSubmissionStore store,com.meridian.applications.application.ApplicationSignals signals,Transactions transactions){return new com.meridian.applications.application.ApplicationSubmissionService(store,signals,transactions);}
+ @Bean com.meridian.applications.application.ApplicationStatusUseCases applicationStatuses(com.meridian.applications.application.ApplicationStatusStore store,com.meridian.applications.application.ApplicationSignals signals,Transactions transactions){return new com.meridian.applications.application.ApplicationStatusService(store,signals,transactions);}
+ @Bean com.meridian.applications.application.ApplicationReadUseCases applicationReads(com.meridian.applications.application.ApplicationReadStore store){return new com.meridian.applications.application.ApplicationReadService(store);}
+ @Bean JobQuestionUseCases jobQuestions(JobQuestionStore store,Transactions transactions){return new JobQuestionService(store,transactions);}
+ @Bean RecruiterUseCases recruiters(RecruiterStore store,Transactions transactions,RecruiterSignals signals){return new RecruiterService(store,transactions,signals);}
  @Bean JobUseCases jobs(JobStore store,Transactions transactions){return new JobService(store,transactions);}
  @Bean OrganizationUseCases organizations(OrganizationStore store,Transactions transactions){return new OrganizationService(store,transactions);}
  @Bean PeopleUseCases people(PeopleStore store,Transactions transactions){return new PeopleService(store,transactions);}

@@ -1,4 +1,6 @@
 package com.meridian;
+import com.meridian.notifications.adapter.ConnectionAccepted;
+import com.meridian.notifications.adapter.ApplicationChanged;
 
 import java.time.Duration;
 import java.util.*;

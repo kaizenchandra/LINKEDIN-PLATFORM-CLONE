@@ -1,6 +1,6 @@
 package com.meridian;
 import com.meridian.identity.adapter.ProviderSessions;
-import com.meridian.identity.adapter.SessionAccess;
+import com.meridian.identity.application.SessionUseCases;
 import com.meridian.identity.adapter.SessionLifetimeFilter;
 import com.meridian.identity.domain.SessionPolicy;
 
@@ -39,7 +39,7 @@ class ProviderLogoutIntegrationTest {
  @Autowired MockMvc mvc;
  @Autowired JdbcTemplate db;
  @Autowired ProviderSessions sessions;
- @Autowired SessionAccess sessionAccess;
+ @Autowired SessionUseCases sessionAccess;
  @Autowired com.meridian.identity.application.ProviderSessionUseCases providerUseCases;
  static RSAKey key;
  static HttpServer jwks;

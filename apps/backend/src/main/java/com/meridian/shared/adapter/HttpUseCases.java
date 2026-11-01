@@ -10,7 +10,7 @@ public final class HttpUseCases {
   try{return operation.get();}catch(UseCaseFailure failure){
    HttpStatus status=switch(failure.reason()){
     case FORBIDDEN->HttpStatus.FORBIDDEN;case RATE_LIMITED->HttpStatus.TOO_MANY_REQUESTS;
-    case INVALID->HttpStatus.BAD_REQUEST;case CONFLICT->HttpStatus.CONFLICT;
+    case UNPROCESSABLE->HttpStatus.UNPROCESSABLE_ENTITY;case INVALID->HttpStatus.BAD_REQUEST;case CONFLICT->HttpStatus.CONFLICT;
     case UNAUTHENTICATED->HttpStatus.UNAUTHORIZED;case NOT_FOUND->HttpStatus.NOT_FOUND;
    };
    throw new ResponseStatusException(status,failure.getMessage());

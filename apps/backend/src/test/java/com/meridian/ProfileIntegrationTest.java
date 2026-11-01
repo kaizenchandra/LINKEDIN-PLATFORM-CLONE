@@ -1,5 +1,10 @@
 package com.meridian;
-import com.meridian.identity.adapter.SessionAccess;
+import com.meridian.notifications.adapter.ConnectionAccepted;
+import com.meridian.notifications.adapter.ApplicationChanged;
+import com.meridian.notifications.adapter.NotificationProjector;
+import com.meridian.realtime.adapter.RealtimeChanged;
+import com.meridian.realtime.adapter.RealtimeHandler;
+import com.meridian.identity.application.SessionUseCases;
 import com.meridian.shared.adapter.ApplicationBodyLimit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,7 +28,7 @@ class ProfileIntegrationTest {
  @Autowired AccountExportQueue exportQueue;
  @Autowired AccountDataSnapshot exportSnapshots;
  @Autowired SearchHistoryRetention historyRetention;
- @Autowired SessionAccess sessionAccess;
+ @Autowired SessionUseCases sessionAccess;
  @Test void notificationPreferenceFailureRollsBackWriteAndSuppressesAfterCommitSignal(){
   String subject="hex-notification-owner";database.update("insert into profile(subject,name) values(?,?)",subject,"Notification owner");
   var store=org.mockito.Mockito.spy(new com.meridian.notifications.adapter.JdbcNotificationStore(database));
@@ -98,6 +103,55 @@ class ProfileIntegrationTest {
   org.junit.jupiter.api.Assertions.assertEquals(2L,database.queryForObject("select version from post_draft where id=?",Long.class,id));
  }
 
+ @Test void projectionFailureRollsBackDeduplicationAndAllowsReplay()throws Exception{
+  var fixture=chat("projection-rollback");var event=java.util.UUID.randomUUID();var connection=java.util.UUID.fromString(fixture.connection());
+  var store=org.mockito.Mockito.spy(new com.meridian.notifications.adapter.JdbcNotificationProjectionStore(database));
+  org.mockito.Mockito.doAnswer(call->{call.callRealMethod();throw new IllegalStateException("Failure after notification insert");}).when(store).insertConnection(event,connection);
+  var signals=org.mockito.Mockito.mock(com.meridian.notifications.application.NotificationSignals.class);
+  var service=new com.meridian.notifications.application.NotificationProjectionService(store,signals,networkTransactions);
+  org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->service.connectionAccepted(event,connection));
+  org.junit.jupiter.api.Assertions.assertEquals(0,database.queryForObject("select count(*) from processed_event where id=?",Integer.class,event));
+  org.junit.jupiter.api.Assertions.assertEquals(0,database.queryForObject("select count(*) from notification where id=?",Integer.class,event));
+  org.mockito.Mockito.verifyNoInteractions(signals);
+  org.mockito.Mockito.doCallRealMethod().when(store).insertConnection(event,connection);service.connectionAccepted(event,connection);service.connectionAccepted(event,connection);
+  org.junit.jupiter.api.Assertions.assertEquals(1,database.queryForObject("select count(*) from processed_event where id=?",Integer.class,event));
+  org.junit.jupiter.api.Assertions.assertEquals(1,database.queryForObject("select count(*) from notification where id=?",Integer.class,event));
+  org.mockito.Mockito.verify(signals).changed("projection-rollback-a");
+ }
+
+ @Test void submissionFailureRollsBackApplicationResumeAuditAndOutbox()throws Exception{
+  var job=applicationJob("submission-rollback-owner");organizationMember("submission-rollback-member");
+  var reads=new com.meridian.applications.adapter.JdbcApplicationReadStore(database);
+  var statuses=new com.meridian.applications.adapter.JdbcApplicationStatusStore(database,reads);
+  var store=org.mockito.Mockito.spy(new com.meridian.applications.adapter.JdbcApplicationSubmissionStore(database,reads,statuses));
+  var created=new java.util.concurrent.atomic.AtomicReference<java.util.UUID>();
+  org.mockito.Mockito.doAnswer(call->{created.set(call.getArgument(0));call.callRealMethod();throw new IllegalStateException("Failure after outbox write");}).when(store).auditAndOutbox(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.eq("submission-rollback-member"));
+  var signals=org.mockito.Mockito.mock(com.meridian.applications.application.ApplicationSignals.class);
+  var service=new com.meridian.applications.application.ApplicationSubmissionService(store,signals,networkTransactions);
+  var input=new com.meridian.applications.domain.Submission.Input("Statement",new com.meridian.applications.domain.Submission.Resume("resume.txt","Resume"),0L,java.util.List.of());
+  org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->service.submit("submission-rollback-member",job,input));
+  org.junit.jupiter.api.Assertions.assertNotNull(created.get());
+  for(String table:java.util.List.of("application_resume","application_audit","event_outbox"))org.junit.jupiter.api.Assertions.assertEquals(0,database.queryForObject("select count(*) from "+table+" where application_id=?",Integer.class,created.get()));
+  org.junit.jupiter.api.Assertions.assertEquals(0,database.queryForObject("select count(*) from job_application where id=?",Integer.class,created.get()));
+  org.mockito.Mockito.verifyNoInteractions(signals);
+ }
+
+ @Test void applicationStatusFailureRollsBackStateAuditAndOutbox()throws Exception{
+  var job=applicationJob("status-rollback-owner");var id=java.util.UUID.fromString(submitApplication(job,"status-rollback-applicant"));
+  var store=org.mockito.Mockito.spy(new com.meridian.applications.adapter.JdbcApplicationStatusStore(database,new com.meridian.applications.adapter.JdbcApplicationReadStore(database)));
+  var beforeAudit=database.queryForObject("select count(*) from application_audit where application_id=?",Integer.class,id);
+  var beforeOutbox=database.queryForObject("select count(*) from event_outbox where application_id=?",Integer.class,id);
+  org.mockito.Mockito.doAnswer(call->{call.callRealMethod();throw new IllegalStateException("Failure after durable writes");}).when(store).auditAndOutbox(id,2,"status-rollback-owner",com.meridian.applications.domain.Applications.State.SUBMITTED,com.meridian.applications.domain.Applications.State.REVIEWING);
+  var signals=org.mockito.Mockito.mock(com.meridian.applications.application.ApplicationSignals.class);
+  var service=new com.meridian.applications.application.ApplicationStatusService(store,signals,networkTransactions);
+  org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->service.change("status-rollback-owner",id,com.meridian.applications.domain.Applications.State.REVIEWING,1));
+  org.junit.jupiter.api.Assertions.assertEquals("SUBMITTED",database.queryForObject("select status from job_application where id=?",String.class,id));
+  org.junit.jupiter.api.Assertions.assertEquals(1L,database.queryForObject("select version from job_application where id=?",Long.class,id));
+  org.junit.jupiter.api.Assertions.assertEquals(beforeAudit,database.queryForObject("select count(*) from application_audit where application_id=?",Integer.class,id));
+  org.junit.jupiter.api.Assertions.assertEquals(beforeOutbox,database.queryForObject("select count(*) from event_outbox where application_id=?",Integer.class,id));
+  org.mockito.Mockito.verifyNoInteractions(signals);
+ }
+
  @Test void networkAcceptanceRollsBackWhenOutboxWriteFails(){
   String sender="hex-network-sender",recipient="hex-network-recipient";
   database.update("insert into profile(subject,name) values(?,?),(?,?)",sender,"Sender",recipient,"Recipient");
@@ -126,7 +180,7 @@ class ProfileIntegrationTest {
   var owner=oidcLogin().idToken(t->t.subject("history-owner"));var other=oidcLogin().idToken(t->t.subject("history-other"));String path="/api/v1/me/search-history";
   mvc.perform(get("/api/v1/me").with(owner));mvc.perform(get("/api/v1/me").with(other));
   mvc.perform(get(path)).andExpect(status().isUnauthorized());mvc.perform(get(path).with(owner)).andExpect(jsonPath("$.enabled").value(false)).andExpect(jsonPath("$.version").value(0));
-  String write=ApplicationQuestions.encode(java.util.Map.of("kind","people","query","  Fictional  Search  ","location"," Remote ","version",0));
+  String write=encodeFixture(java.util.Map.of("kind","people","query","  Fictional  Search  ","location"," Remote ","version",0));
   mvc.perform(put(path+"/entries").with(owner).with(csrf()).contentType("application/json").content(write)).andExpect(status().isConflict());
   mvc.perform(put(path+"/preference").with(owner).contentType("application/json").content("{\"enabled\":true,\"version\":0}")).andExpect(status().isForbidden());
   mvc.perform(put(path+"/preference").with(owner).with(csrf()).contentType("application/json").content("{\"enabled\":true,\"version\":0}")).andExpect(jsonPath("$.version").value(1));
@@ -208,8 +262,8 @@ class ProfileIntegrationTest {
 
 
 
- String questionForm(long version,java.util.UUID id,String prompt,boolean required){return ApplicationQuestions.encode(new ApplicationQuestions.Form(version,java.util.List.of(new ApplicationQuestions.Question(id,prompt,required))));}
- String questionSubmission(long version,java.util.UUID id,String text){return ApplicationQuestions.encode(java.util.Map.of("statement","Question application","questionVersion",version,"answers",java.util.List.of(new ApplicationQuestions.Answer(id,text))));}
+ String questionForm(long version,java.util.UUID id,String prompt,boolean required){return encodeFixture(new com.meridian.jobs.domain.JobQuestions.Form(version,java.util.List.of(new com.meridian.jobs.domain.JobQuestions.Question(id,prompt,required))));}
+ String questionSubmission(long version,java.util.UUID id,String text){return encodeFixture(java.util.Map.of("statement","Question application","questionVersion",version,"answers",java.util.List.of(new com.meridian.applications.domain.Submission.Answer(id,text))));}
  @Test void jobQuestionFormsRequireCurrentRecruitingAuthorityAndVersion()throws Exception{
   var pair=chat("question-role");var job=applicationJob("question-role-a");var company=database.queryForObject("select organization_id from job where id=?",java.util.UUID.class,job);var question=java.util.UUID.randomUUID();String url="/api/v1/jobs/"+job+"/questions";
   var owner=oidcLogin().idToken(t->t.subject("question-role-a"));var member=oidcLogin().idToken(t->t.subject("question-role-b"));
@@ -217,13 +271,13 @@ class ProfileIntegrationTest {
   mvc.perform(get(url).with(member)).andExpect(jsonPath("$.version").value(0)).andExpect(jsonPath("$.questions.length()").value(0));
   mvc.perform(put(url).with(member).with(csrf()).contentType("application/json").content(questionForm(0,question,"A question",true))).andExpect(status().isForbidden());
   mvc.perform(put(url).with(owner).contentType("application/json").content(questionForm(0,question,"A question",true))).andExpect(status().isForbidden());
-  var q=new ApplicationQuestions.Question(question,"A question",true);
-  mvc.perform(put(url).with(owner).with(csrf()).contentType("application/json").content(ApplicationQuestions.encode(new ApplicationQuestions.Form(0L,java.util.List.of(q,q))))).andExpect(status().isBadRequest());
+  var q=new com.meridian.jobs.domain.JobQuestions.Question(question,"A question",true);
+  mvc.perform(put(url).with(owner).with(csrf()).contentType("application/json").content(encodeFixture(new com.meridian.jobs.domain.JobQuestions.Form(0L,java.util.List.of(q,q))))).andExpect(status().isBadRequest());
   mvc.perform(put(url).with(owner).with(csrf()).contentType("application/json").content(questionForm(0,question," ",true))).andExpect(status().isBadRequest());
   mvc.perform(put(url).with(owner).with(csrf()).contentType("application/json").content(questionForm(0,question,"  Describe your experience  ",true))).andExpect(status().isOk()).andExpect(jsonPath("$.version").value(1)).andExpect(jsonPath("$.questions[0].prompt").value("Describe your experience"));
   mvc.perform(put(url).with(owner).with(csrf()).contentType("application/json").content(questionForm(0,question,"Stale overwrite",true))).andExpect(status().isConflict());
   var grant=java.util.UUID.randomUUID();String invitation="/api/v1/organizations/"+company+"/recruiter-invitations/"+grant;
-  mvc.perform(put(invitation).with(owner).with(csrf()).contentType("application/json").content(ApplicationQuestions.encode(java.util.Map.of("connectionId",pair.connection())))).andExpect(status().isOk());
+  mvc.perform(put(invitation).with(owner).with(csrf()).contentType("application/json").content(encodeFixture(java.util.Map.of("connectionId",pair.connection())))).andExpect(status().isOk());
   mvc.perform(put("/api/v1/recruiter-access/"+grant).with(member).with(csrf()).contentType("application/json").content(recruiterChange("ACCEPT",1))).andExpect(status().isOk());
   mvc.perform(put(url).with(member).with(csrf()).contentType("application/json").content(questionForm(1,question,"Recruiter question",false))).andExpect(status().isOk());
   mvc.perform(put("/api/v1/recruiter-access/"+grant).with(owner).with(csrf()).contentType("application/json").content(recruiterChange("REVOKE",2))).andExpect(status().isOk());
@@ -237,7 +291,7 @@ class ProfileIntegrationTest {
   mvc.perform(put(apply).with(member).with(csrf()).contentType("application/json").content(questionSubmission(1,q," "))).andExpect(status().isUnprocessableEntity());
   mvc.perform(put(apply).with(member).with(csrf()).contentType("application/json").content(questionSubmission(1,java.util.UUID.randomUUID(),"Answer"))).andExpect(status().isBadRequest());
   mvc.perform(put(apply).with(member).with(csrf()).contentType("application/json").content(questionSubmission(1,q,"x".repeat(1001)))).andExpect(status().isBadRequest());
-  mvc.perform(put(apply).with(member).with(csrf()).contentType("application/json").content(ApplicationQuestions.encode(java.util.Map.of("statement","Question application","questionVersion",1,"answers",java.util.List.of(new ApplicationQuestions.Answer(q,"One"),new ApplicationQuestions.Answer(q,"Two")))))).andExpect(status().isBadRequest());
+  mvc.perform(put(apply).with(member).with(csrf()).contentType("application/json").content(encodeFixture(java.util.Map.of("statement","Question application","questionVersion",1,"answers",java.util.List.of(new com.meridian.applications.domain.Submission.Answer(q,"One"),new com.meridian.applications.domain.Submission.Answer(q,"Two")))))).andExpect(status().isBadRequest());
   org.junit.jupiter.api.Assertions.assertEquals(0,database.queryForObject("select count(*) from job_application where job_id=?",Integer.class,job));
   String body=questionSubmission(1,q,"  Private answer  ");
   String receipt=mvc.perform(put(apply).with(member).with(csrf()).contentType("application/json").content(body)).andExpect(status().isOk()).andExpect(jsonPath("$.answers[0].text").value("Private answer")).andReturn().getResponse().getContentAsString();
@@ -266,7 +320,7 @@ class ProfileIntegrationTest {
   var job=applicationJob("app-notify-owner");String id=submitApplication(job,"app-notify-member");
   var application=java.util.UUID.fromString(id);
   var eventId=database.queryForObject("select id from event_outbox where application_id=? and application_version=1",java.util.UUID.class,application);
-  var events=org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher.class);var projector=new NotificationProjector(database,events);
+  var events=org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher.class);var projector=projectionFixture(events);
   projector.project(new ApplicationChanged(eventId,1,"ApplicationChanged",application,2));
   org.junit.jupiter.api.Assertions.assertEquals(0,database.queryForObject("select count(*) from processed_event where id=?",Integer.class,eventId));
   var event=new ApplicationChanged(eventId,1,"ApplicationChanged",application,1);projector.project(event);projector.project(event);
@@ -632,7 +686,7 @@ class ProfileIntegrationTest {
  @Test void notificationReadLifecycleIsOwnedIdempotentAndBounded()throws Exception{
   var json=new com.fasterxml.jackson.databind.ObjectMapper();
   var fixture=chat("notification-life");var owner=oidcLogin().idToken(t->t.subject("notification-life-a"));var other=oidcLogin().idToken(t->t.subject("notification-life-b"));
-  var publisher=org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher.class);var projector=new NotificationProjector(database,publisher);
+  var publisher=org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher.class);var projector=projectionFixture(publisher);
   var id=java.util.UUID.randomUUID();var event=new ConnectionAccepted(id,1,"ConnectionAccepted",java.util.UUID.fromString(fixture.connection()));projector.project(event);
   var page=json.readTree(mvc.perform(get("/api/v1/notifications").with(owner)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
   String through=page.get("readThrough").asText();String read="/api/v1/notifications/"+id+"/read";String dismiss="/api/v1/notifications/"+id;
@@ -660,7 +714,7 @@ class ProfileIntegrationTest {
  void notificationSignalsOnlyFollowNewVisibleProjections()throws Exception {
   var fixture=chat("notification-live");
   var events=org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher.class);
-  var projector=new NotificationProjector(database,events);
+  var projector=projectionFixture(events);
   var event=new ConnectionAccepted(java.util.UUID.randomUUID(),1,"ConnectionAccepted",java.util.UUID.fromString(fixture.connection()));
   projector.project(event);projector.project(event);
   org.mockito.Mockito.verify(events,org.mockito.Mockito.times(1)).publishEvent(new RealtimeChanged(java.util.Set.of("notification-live-a")));
@@ -684,6 +738,8 @@ class ProfileIntegrationTest {
   org.mockito.Mockito.verify(fixture.socket(),org.mockito.Mockito.timeout(2000)).sendMessage(org.mockito.ArgumentMatchers.any());
   var transaction=new org.springframework.transaction.support.TransactionTemplate(transactionManager);
   try {
+   publisher.publishEvent(new RealtimeChanged(java.util.Set.of("transaction-signal")));
+   org.mockito.Mockito.verify(fixture.socket(),org.mockito.Mockito.after(100).times(1)).sendMessage(org.mockito.ArgumentMatchers.any());
    transaction.executeWithoutResult(status->{publisher.publishEvent(new RealtimeChanged(java.util.Set.of("transaction-signal")));status.setRollbackOnly();});
    org.mockito.Mockito.verify(fixture.socket(),org.mockito.Mockito.after(100).times(1)).sendMessage(org.mockito.ArgumentMatchers.any());
    transaction.executeWithoutResult(status->publisher.publishEvent(new RealtimeChanged(java.util.Set.of("transaction-signal"))));
@@ -1705,4 +1761,6 @@ class ProfileIntegrationTest {
   database.update("update content_post set moderated_at=null,deleted_at=now() where id=?",post);mvc.perform(get("/api/v1/feed?scope=HIDDEN").with(r)).andExpect(jsonPath("$.items.length()").value(0));
  }
 
+ static String encodeFixture(Object value){try{return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(value);}catch(Exception e){throw new IllegalStateException(e);}}
+ NotificationProjector projectionFixture(org.springframework.context.ApplicationEventPublisher publisher){return new NotificationProjector(new com.meridian.notifications.application.NotificationProjectionService(new com.meridian.notifications.adapter.JdbcNotificationProjectionStore(database),new com.meridian.notifications.adapter.NotificationRealtimeAdapter(publisher),networkTransactions));}
 }

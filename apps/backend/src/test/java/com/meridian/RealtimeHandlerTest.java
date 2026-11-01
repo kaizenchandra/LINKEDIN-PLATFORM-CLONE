@@ -1,5 +1,7 @@
 package com.meridian;
-import com.meridian.identity.adapter.SessionAccess;
+import com.meridian.realtime.adapter.RealtimeChanged;
+import com.meridian.realtime.adapter.RealtimeHandler;
+import com.meridian.identity.application.SessionUseCases;
 
 import java.util.Map;
 import java.util.Set;
@@ -15,7 +17,7 @@ import static org.mockito.Mockito.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class RealtimeHandlerTest {
- SessionAccess activeSessions(){var sessions=mock(SessionAccess.class);when(sessions.active(anyString(),anyString())).thenReturn(true);return sessions;}
+ SessionUseCases activeSessions(){var sessions=mock(SessionUseCases.class);when(sessions.active(anyString(),anyString())).thenReturn(true);return sessions;}
  record Fixture(WebSocketSession socket, MockHttpSession session) {}
  Fixture client(String subject)throws Exception {
   var session=new MockHttpSession();var user=mock(OidcUser.class);when(user.getSubject()).thenReturn(subject);
@@ -58,6 +60,20 @@ class RealtimeHandlerTest {
   try{var a=client("remote");handler.afterConnectionEstablished(a.socket());verify(a.socket(),timeout(2000)).sendMessage(any());
    when(sessions.active(a.session().getId(),"remote")).thenReturn(false);handler.validateSessions();
    verify(a.socket()).close(CloseStatus.POLICY_VIOLATION);
+  }finally{handler.stop();}
+ }
+ @Test void queuedAudienceCannotBeChangedByPublisher(){
+  var subjects=new java.util.HashSet<>(Set.of("owner"));
+  var event=new RealtimeChanged(subjects);subjects.clear();subjects.add("outsider");
+  assertEquals(Set.of("owner"),event.subjects());
+  assertThrows(UnsupportedOperationException.class,()->event.subjects().add("outsider"));
+ }
+ @Test void unavailableSessionStoreFailsClosed()throws Exception{
+  var sessions=activeSessions();var handler=new RealtimeHandler(new SimpleMeterRegistry(),sessions);
+  try{var a=client("database-outage");handler.afterConnectionEstablished(a.socket());verify(a.socket(),timeout(2000)).sendMessage(any());
+   when(sessions.active(a.session().getId(),"database-outage")).thenThrow(new org.springframework.dao.DataAccessResourceFailureException("Unavailable"));
+   handler.validateSessions();verify(a.socket()).close(CloseStatus.POLICY_VIOLATION);
+   handler.changed(new RealtimeChanged(Set.of("database-outage")));verify(a.socket(),after(100).times(1)).sendMessage(any());
   }finally{handler.stop();}
  }
 }
